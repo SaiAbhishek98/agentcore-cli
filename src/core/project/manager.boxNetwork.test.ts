@@ -134,7 +134,11 @@ function countingJson() {
 
 /** A new Strands project, with the Box gateway entry and the box profile `create` writes. */
 async function strandsProject(
-  options: { backends?: { CDK: ProjectBackend }; env?: NodeJS.ProcessEnv } = {},
+  options: {
+    backends?: { CDK: ProjectBackend };
+    env?: NodeJS.ProcessEnv;
+    template?: "agent-python-strands-box" | "agent-python-strands-box-container";
+  } = {},
 ) {
   const directory = await temporary("agentcore-box-network-");
   process.chdir(directory);
@@ -158,9 +162,12 @@ async function strandsProject(
   const { value: created } = await drain(
     manager.create({
       name: "demo",
-      scaffoldRuntimeInput: resolveRuntimeTemplateShortcut("agent-python-strands-box", {
-        runtimeName: "agent_python_strands",
-      }),
+      scaffoldRuntimeInput: resolveRuntimeTemplateShortcut(
+        options.template ?? "agent-python-strands-box",
+        {
+          runtimeName: "agent_python_strands",
+        },
+      ),
       skipInstall: true,
       skipGit: true,
     }),
@@ -234,6 +241,58 @@ const userTarget = (name: string, endpoint: string, rest: object = {}) => ({
 });
 
 describe("build writes the Box network of the box profile", () => {
+  test.each(["agent-python-strands-box", "agent-python-strands-box-container"] as const)(
+    "gives no warning for the box profile that create writes (%s)",
+    async (template) => {
+      const { manager, root } = await strandsProject({ template });
+
+      const { warnings } = await build(manager, root);
+
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  test("warns for each part of the box profile that the Runtime box profile does not carry", async () => {
+    const { manager, root, box } = await strandsProject();
+    await editProfile(root, {
+      tables:
+        '\n[tool.uname.env]\nLC_ALL = "C"\n' +
+        '\n[mcp.fs]\ntype = "stdio"\ncommand = ["uvx", "mcp-server-fetch"]\n' +
+        '\n[telemetry.collector]\nkind = "otlp"\ndestination = "https://otel.example.com"\n',
+    });
+    const profile = await text(root, ".box/agent_python_strands/local/profile.toml");
+    await writeFile(
+      path(root, ".box/agent_python_strands/local/profile.toml"),
+      profile.replace("[agent.env]\n", '[agent.env]\nMODEL_TEMPERATURE = "0.2"\n'),
+    );
+    const shown = shows();
+    box.answer = {
+      ...shown,
+      boxToml: {
+        ...shown.boxToml,
+        mcp: { fs: { type: "stdio", command: ["uvx", "mcp-server-fetch"] } },
+        telemetry: { collector: { kind: "otlp", destination: "https://otel.example.com" } },
+      },
+    };
+
+    const { warnings } = await build(manager, root);
+
+    const at = (start: string) => {
+      const lines = profile.replace("[agent.env]\n", '[agent.env]\nMODEL_TEMPERATURE = "0.2"\n');
+      const line = lines.split("\n").findIndex((candidate) => candidate.startsWith(start)) + 1;
+      return `.box/agent_python_strands/local/profile.toml:${line}:1`;
+    };
+    expect(warnings).toEqual([
+      `${at("[mcp.fs]")}: [mcp.fs] is a stdio MCP server, which the Runtime box profile does not run.`,
+      `${at("[telemetry.collector]")}: [telemetry.collector] has the kind "otlp", and the Runtime ` +
+        "box profile copies only the cloudwatch_logs and cloudwatch_traces targets.",
+      `${at("MODEL_TEMPERATURE")}: [agent.env] sets MODEL_TEMPERATURE, and the Runtime box ` +
+        "profile does not carry it.",
+      `${at("[tool.uname.env]")}: [tool.uname] sets env, and the Runtime box profile does not ` +
+        "carry it.",
+    ]);
+  });
+
   test("gives each host Box allows a target, and routes it through the gateway on the Runtime", async () => {
     const { manager, root, counter, box } = await strandsProject();
     await editProfile(root, {

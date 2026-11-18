@@ -7,13 +7,19 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { boxGatewayName, isBoxProject, type ProjectSpec } from "../../projectSchemas/project";
 import { InvalidEnvironmentError, ProjectStateError } from "../../errors/errors";
 import { runsAgentInBox, type PolicyFileCopy } from "./backends/boxContainer";
 import { BOX_GATEWAY_BEDROCK_REGION } from "../../handlers/project/shortcuts";
 import { addBoxGatewayTargets, BOX_BEDROCK_POLICY_FILE, BOX_MEMORY_POLICY_FILE } from "./boxMemory";
-import { boxLocalDir, boxLocalProfileFile, boxLocalProfilePath } from "./templates/boxProfile";
+import {
+  boxLocalDir,
+  boxLocalProfileFile,
+  boxLocalProfilePath,
+  runtimeBoxProfileParts,
+} from "./templates/boxProfile";
 import {
   buildBoxNetwork,
   parseResolvedPolicy,
@@ -24,7 +30,11 @@ import {
   type BoxNetworkFailure,
   type ParsedPolicy,
   type PolicyFileText,
+  type PackParts,
+  type ProfilePlaces,
+  uncarriedPartWarnings,
 } from "./boxNetwork";
+import type { ProjectRuntime } from "../../projectSchemas/runtime";
 import type { BoxProfileResolver, ResolvedBoxProfile } from "./boxProfileResolver";
 
 /** The policy of an agent that has no local box profile at `profilePath`. */
@@ -56,12 +66,11 @@ export async function readBoxNetworks(
   const networks: BoxNetwork[] = [];
   for (const runtime of runtimes) {
     // Each boxed agent reads its own .box/<name>/local profile and policy files.
-    const { parsed, failures: found } = await readResolvedPolicy(
-      projectRoot,
-      runtime.name,
-      resolver,
-      region,
-    );
+    const {
+      parsed,
+      failures: found,
+      local,
+    } = await readResolvedPolicy(projectRoot, runtime.name, resolver, region);
     const gateway = boxGatewayName(runtime.name);
     const entry = withDefaults.agentCoreGateways.find(({ name }) => name === gateway);
     const granted = grantedActions(projectRoot, gateway, entry?.additionalPolicies ?? []);
@@ -73,9 +82,110 @@ export async function readBoxNetworks(
       targets: entry?.targets ?? [],
       grantedActions: granted.actions,
     });
-    networks.push({ ...network, warnings: [...network.warnings, ...granted.warnings] });
+    // A profile with a failure stops build, so it gets no warning for what the Runtime drops.
+    const uncarried =
+      local === undefined || network.failures.length > 0
+        ? []
+        : await uncarriedWarnings(projectRoot, runtime, spec, resolver, local);
+    networks.push({
+      ...network,
+      warnings: [...network.warnings, ...granted.warnings, ...uncarried],
+    });
   }
   return networks;
+}
+
+/** The local box profile of a runtime, as Box resolved it for the build. */
+interface LocalProfile {
+  readonly profileFile: string;
+  /** The text Box resolved: the profile's own, or a copy for the build's Bedrock region. */
+  readonly text: string;
+  readonly places: ProfilePlaces;
+  readonly policies: readonly PolicyFileText[];
+  readonly resolved: ResolvedBoxProfile;
+}
+
+/**
+ * A warning for each part of the local box profile of `runtime` that its AgentCore Runtime box
+ * profile does not carry. For each pack that the Runtime profile does not import, Box resolves a
+ * copy of the profile without the pack, to find what the pack adds.
+ */
+async function uncarriedWarnings(
+  projectRoot: string,
+  runtime: ProjectRuntime,
+  spec: ProjectSpec,
+  resolver: BoxProfileResolver,
+  local: LocalProfile,
+): Promise<string[]> {
+  let profile: Record<string, unknown>;
+  try {
+    profile = parseToml(local.text) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const parts = runtimeBoxProfileParts(spec, runtime);
+  const packs = local.resolved.packs.map(({ name }) => name);
+  const packParts = new Map<string, PackParts>();
+  for (const pack of packs) {
+    if (parts.packs.includes(pack)) continue;
+    packParts.set(
+      pack,
+      await packPartsOf(projectRoot, runtime.name, resolver, local, profile, pack),
+    );
+  }
+  return uncarriedPartWarnings({
+    profilePath: local.profileFile,
+    profile,
+    places: local.places,
+    boxToml: local.resolved.boxToml,
+    packs,
+    runtime: parts,
+    packParts,
+  });
+}
+
+/**
+ * The `box.toml` keys that the check of a pack does not compare as a whole: the routes, which the
+ * Runtime profile carries as gateway targets; the MCP servers and the telemetry targets, which
+ * have warnings of their own; and the tools, which it compares by name.
+ */
+const KEYS_CHECKED_APART: ReadonlySet<string> = new Set(["egress", "mcp", "telemetry", "tool"]);
+
+/**
+ * What `pack` adds to Box's resolution of the local profile `local`, whose text is `profile`: the
+ * parts that a resolution of a copy without the pack does not have. Nothing, when the profile
+ * text does not import the pack, as another pack then imports it.
+ */
+async function packPartsOf(
+  projectRoot: string,
+  agentName: string,
+  resolver: BoxProfileResolver,
+  local: LocalProfile,
+  profile: Record<string, unknown>,
+  pack: string,
+): Promise<PackParts> {
+  const named = Array.isArray(profile.packs) ? (profile.packs as unknown[]) : [];
+  if (!named.includes(pack)) return { tools: [], other: false };
+  let without: ResolvedBoxProfile;
+  try {
+    const text = stringifyToml({ ...profile, packs: named.filter((name) => name !== pack) });
+    without = await resolveCopy(projectRoot, agentName, resolver, text, local.policies);
+  } catch (error) {
+    if (error instanceof InvalidEnvironmentError) return undefined;
+    throw error;
+  }
+  const full = local.resolved.boxToml;
+  const tool = (toml: Readonly<Record<string, unknown>>) =>
+    isTable(toml.tool) ? toml.tool : ({} as Record<string, unknown>);
+  const tools = Object.keys(tool(full)).filter(
+    (name) => !Object.hasOwn(tool(without.boxToml), name),
+  );
+  const rest = (toml: Readonly<Record<string, unknown>>) =>
+    Object.fromEntries(Object.entries(toml).filter(([key]) => !KEYS_CHECKED_APART.has(key)));
+  const changedTool = Object.keys(tool(without.boxToml)).some(
+    (name) => !isDeepStrictEqual(tool(full)[name], tool(without.boxToml)[name]),
+  );
+  return { tools, other: changedTool || !isDeepStrictEqual(rest(full), rest(without.boxToml)) };
 }
 
 /**
@@ -114,7 +224,11 @@ async function readResolvedPolicy(
   agentName: string,
   resolver: BoxProfileResolver,
   region: string,
-): Promise<{ parsed: ParsedPolicy; failures: readonly BoxNetworkFailure[] }> {
+): Promise<{
+  parsed: ParsedPolicy;
+  failures: readonly BoxNetworkFailure[];
+  local?: LocalProfile;
+}> {
   const profileFile = boxLocalProfileFile(agentName);
   const text = profileText(projectRoot, agentName);
   if (text === undefined) return { parsed: noPolicy(profileFile), failures: [] };
@@ -139,6 +253,7 @@ async function readResolvedPolicy(
   const policy = parseResolvedPolicy({ ...profile.profile, places }, resolved.policy, files.texts);
   return {
     parsed: policy.parsed,
+    local: { profileFile, text: forRegion ?? text, places, policies: files.texts, resolved },
     failures: [
       ...(named.ok ? [] : [named.failure]),
       ...profile.failures,

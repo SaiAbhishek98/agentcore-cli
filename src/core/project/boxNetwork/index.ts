@@ -18,6 +18,8 @@ export {
   profilePlaces,
   profilePolicyFiles,
   type ParsedProfile,
+  type ProfilePlaces,
 } from "./profileParser";
 export { cloudWatchTelemetry, type CloudWatchTelemetry } from "./telemetry";
+export { uncarriedPartWarnings, type PackParts, type RuntimeProfileParts } from "./uncarriedParts";
 export { FAILURE_CODES, hostKey, type FailureCode } from "./types";

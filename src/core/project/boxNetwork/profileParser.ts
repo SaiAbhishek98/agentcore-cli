@@ -12,7 +12,10 @@ import { cloudWatchTelemetry, type CloudWatchTelemetry } from "./telemetry";
 
 /** Where the profile's own text sets a key, as `<profile path>:line:column`. */
 export interface ProfilePlaces {
-  /** By `egress.<name>` and `mcp.<name>`, the first line that sets the entry. */
+  /**
+   * By `egress.<name>`, `mcp.<name>`, `telemetry.<name>`, `tool.<name>`, `tool.<name>.<key>`,
+   * `agent.<key>`, and `agent.env.<name>`, the first line that sets the entry or the key.
+   */
   readonly entries: ReadonlyMap<string, string>;
   readonly packs?: string;
   readonly policies?: string;
@@ -137,10 +140,14 @@ export function profilePolicyFiles(
   return { ok: true, files };
 }
 
+/** The tables whose entries {@link profilePlaces} places, by `<table>.<name>`. */
+const PLACED_TABLES: ReadonlySet<string> = new Set(["egress", "mcp", "telemetry", "tool", "agent"]);
+
 /**
- * Where the profile `text`, at `profilePath` from the project root, sets each `[egress.<name>]`
- * and `[mcp.<name>]` entry, `packs`, and `policies`: the first line of each, by its table header,
- * its dotted key, or its key under `[egress]` or `[mcp]`.
+ * Where the profile `text`, at `profilePath` from the project root, sets each entry of
+ * {@link PLACED_TABLES}, each `[agent.env]` variable, each key of a `[tool.<name>]`, `packs`, and
+ * `policies`: the first line of each, by its table header, its dotted key, or its key under the
+ * table.
  */
 export function profilePlaces(text: string, profilePath: string): ProfilePlaces {
   const entries = new Map<string, string>();
@@ -153,10 +160,16 @@ export function profilePlaces(text: string, profilePath: string): ProfilePlaces 
     if (!header && !assignment) return;
     const path = header ? keyPath(header[1]!) : [...table, ...keyPath(assignment![1]!)];
     if (header) table = path;
-    const [first, second] = path;
-    if ((first === "egress" || first === "mcp") && second !== undefined) {
-      const key = `${first}.${second}`;
+    const [first, second, third] = path;
+    const set = (key: string) => {
       if (!entries.has(key)) entries.set(key, place);
+    };
+    if (first !== undefined && PLACED_TABLES.has(first) && second !== undefined) {
+      set(`${first}.${second}`);
+    }
+    if (first === "agent" && second === "env" && third !== undefined) set(`agent.env.${third}`);
+    if (first === "tool" && second !== undefined && third !== undefined) {
+      set(`tool.${second}.${third}`);
     }
     if (!header && path.length === 1 && !keys.has(first!)) keys.set(first!, place);
   });

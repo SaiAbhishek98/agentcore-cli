@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { parse } from "smol-toml";
 import { InvalidEnvironmentError } from "../../errors/errors";
 import { getBoxGatewayEntry } from "../../handlers/project/shortcuts";
 import type { ProjectSpec } from "../../projectSchemas/project";
@@ -217,6 +218,87 @@ describe("the telemetry of each box runtime", () => {
       ["second", [logsOf("group-b")]],
       ["quiet", undefined],
     ]);
+  });
+});
+
+describe("the parts of the profile that the Runtime box profile does not carry", () => {
+  /**
+   * A box that resolves each pack of the profile it reads: box/git adds the tool git, box/anthropic
+   * the route anthropic, and the profile cannot resolve without box/odd. Records each profile.
+   */
+  class PackBox implements BoxProfileResolver {
+    public readonly packs: string[][] = [];
+
+    public async resolve(projectRoot: string, profilePath: string) {
+      const file = isAbsolute(profilePath) ? profilePath : join(projectRoot, profilePath);
+      const packs = (parse(await readFile(file, "utf8")) as { packs: string[] }).packs;
+      this.packs.push(packs);
+      if (!packs.includes("box/odd")) {
+        throw new InvalidEnvironmentError("box: error: the profile needs box/odd");
+      }
+      const shown = boxShowOf({
+        egress: {
+          ...API_ROUTE,
+          ...(packs.includes("box/anthropic") && {
+            anthropic: { destinations: ["api.anthropic.com"], secret: { ref: "env://KEY" } },
+          }),
+        },
+      });
+      return {
+        ...shown,
+        packs: packs.map((name) => ({ name, version: "1" })),
+        boxToml: {
+          ...shown.boxToml,
+          tool: {
+            uname: { command: ["/usr/bin/uname"] },
+            ...(packs.includes("box/git") && { git: { command: ["/usr/bin/git"] } }),
+          },
+        },
+      };
+    }
+  }
+
+  test("resolves the profile without each pack the Runtime profile does not import, and warns for one that adds more than routes", async () => {
+    const root = await project([]);
+    await writeFile(
+      join(root, ...LOCAL, "profile.toml"),
+      'packs = ["box/base", "box/git", "box/anthropic", "box/odd"]\n\n' +
+        '[egress.api]\ndestinations = ["api.example.com"]\n',
+    );
+    const box = new PackBox();
+
+    const [network] = await readBoxNetworks(SPEC, root, box);
+
+    expect(box.packs).toEqual([
+      ["box/base", "box/git", "box/anthropic", "box/odd"],
+      ["box/base", "box/anthropic", "box/odd"],
+      ["box/base", "box/git", "box/odd"],
+      ["box/base", "box/git", "box/anthropic"],
+    ]);
+    // box/anthropic adds only a route, which its gateway target carries.
+    expect(network?.warnings).toEqual([
+      ".box/agent/local/profile.toml:1:1: `packs` imports box/git, which the Runtime box " +
+        "profile does not import, so the agent on AgentCore Runtime has no [tool.git].",
+      ".box/agent/local/profile.toml:1:1: `packs` imports box/odd, which the Runtime box " +
+        "profile does not import, so the agent on AgentCore Runtime gets only the routes of the " +
+        "pack.",
+    ]);
+  });
+
+  test("gives no warning, and resolves no copy, for a profile build stops on", async () => {
+    const root = await project(["missing.dw"]);
+    await writeFile(
+      join(root, ...LOCAL, "profile.toml"),
+      'packs = ["box/base", "box/git", "box/odd"]\npolicies = ["missing.dw"]\n\n' +
+        '[agent.env]\nMODE = "fast"\n',
+    );
+    const box = new PackBox();
+
+    const [network] = await readBoxNetworks(SPEC, root, box);
+
+    expect(network?.failures.map(({ code }) => code)).toEqual(["INVALID_POLICY_FILE"]);
+    expect(network?.warnings).toEqual([]);
+    expect(box.packs).toHaveLength(1);
   });
 });
 

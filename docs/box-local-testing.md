@@ -191,7 +191,10 @@ the Runtime profile and its resources under `.box/<runtime>/aws/`.
   method, or forbid), when an entry's host gets no target, and when a target is signed for an
   AWS service that no policy of the gateway's role grants. It also warns for a `.json` file in
   the gateway's `additionalPolicies` that is missing or is not JSON, as it counts none of its
-  actions.
+  actions. Build also warns for each part of your profile that the AgentCore Runtime profile does
+  not carry: a stdio MCP server, a telemetry target that is not CloudWatch, a pack that adds more
+  than routes, and each `[agent]` or `[tool]` setting other than the command, the folder, the
+  grants, and the listener, which the Runtime profile sets for itself.
 - **The AgentCore Runtime profile.** The generated `.box/<runtime>/aws/profile.toml` (copied into
   `.box-dist/`) has one `[egress.<target>]` route through the gateway for each target of
   `<runtime>-box`. For the target of an MCP server, the profile has an `[mcp.<server>]` server

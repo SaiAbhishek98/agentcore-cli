@@ -4,11 +4,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { InvalidEnvironmentError } from "../../errors/errors";
+import {
+  RUNTIME_TEMPLATE_SHORTCUTS,
+  resolveRuntimeTemplateShortcut,
+  type RuntimeTemplateShortcutName,
+} from "../../handlers/project/shortcuts";
 import { ProcessFailedError, type ProcessEvent, type StreamProcessOptions } from "../../io";
 import type { ProjectSpec } from "../../projectSchemas/project";
 import { readBoxNetworks } from "./boxNetworkSource";
 import { BoxCliProfileResolver, parseBoxProfileShow } from "./boxProfileResolver";
 import { boxNetworkRules, boxReachRules } from "./boxProfileResolver-test-support";
+import { renderBoxProfile } from "./templates/boxProfile";
 
 const NC = 'action == Box::Action::"net:connect"';
 const HR = 'action == Box::Action::"http:request"';
@@ -527,6 +533,80 @@ describe("the box on PATH", () => {
       expect(network?.warnings).toContainEqual(
         expect.stringContaining('Box still applies the rule "no_admin"'),
       );
+    },
+    120_000,
+  );
+
+  /** A project with the local box profile that create writes for the box template `name`. */
+  async function templateProject(name: RuntimeTemplateShortcutName, tables = "") {
+    const root = await mkdtemp(join(tmpdir(), "box-profile-template-"));
+    directories.push(root);
+    const input = resolveRuntimeTemplateShortcut(name, { runtimeName: "agent" });
+    await mkdir(join(root, ".box", "agent", "local"), { recursive: true });
+    // Box refuses a CodeZip profile whose venv does not exist yet, as before `uv sync`.
+    await mkdir(join(root, "app", "agent", ".venv"), { recursive: true });
+    // Build reads the profile of a container whose image copies box in, as the template's does.
+    await writeFile(
+      join(root, "app", "agent", "Dockerfile"),
+      "ARG BOX_DIST=.box-dist\nCOPY ${BOX_DIST}/ /home/bedrock_agentcore/box-profile/\n",
+    );
+    await writeFile(
+      join(root, ".box", "agent", "local", "profile.toml"),
+      renderBoxProfile("demo", input)! + tables,
+    );
+    const spec = {
+      ...SPEC,
+      runtimes: [
+        {
+          name: "agent",
+          build: input.build,
+          entrypoint: input.build === "CodeZip" ? "start.py" : "main.py",
+          codeLocation: "app/agent",
+          protocol: input.protocol ?? "HTTP",
+          modelProvider: input.modelProvider,
+        },
+      ],
+    } as unknown as ProjectSpec;
+    return { root, spec };
+  }
+
+  const BOX_TEMPLATES = (
+    Object.keys(RUNTIME_TEMPLATE_SHORTCUTS) as RuntimeTemplateShortcutName[]
+  ).filter((name) => RUNTIME_TEMPLATE_SHORTCUTS[name].box);
+
+  test.skipIf(!boxPrintsJson).each(BOX_TEMPLATES)(
+    "gives no warning for the box profile that create writes for %s (skipped when the box on PATH has no --format json)",
+    async (name) => {
+      const { root, spec } = await templateProject(name);
+
+      const [network] = await readBoxNetworks(spec, root, new BoxCliProfileResolver());
+
+      expect(network?.failures).toEqual([]);
+      expect(network?.warnings).toEqual([]);
+    },
+    120_000,
+  );
+
+  test.skipIf(!boxPrintsJson)(
+    "warns for a stdio MCP server and an otlp target, and not for a pack that adds only a route (skipped when the box on PATH has no --format json)",
+    async () => {
+      const { root, spec } = await templateProject(
+        "agent-python-strands-box-container",
+        '\n[mcp.fs]\ntype = "stdio"\ncommand = ["uvx", "mcp-server-fetch"]\n' +
+          '\n[telemetry.collector]\nkind = "otlp"\ndestination = "https://otel.example.com"\n',
+      );
+      const file = join(root, ".box", "agent", "local", "profile.toml");
+      const text = await readFile(file, "utf8");
+      await writeFile(file, text.replace('"box/bedrock"]', '"box/bedrock", "box/anthropic"]'));
+
+      const [network] = await readBoxNetworks(spec, root, new BoxCliProfileResolver());
+
+      expect(network?.warnings).toEqual([
+        expect.stringMatching(
+          /^\.box\/agent\/local\/profile\.toml:\d+:1: \[mcp\.fs\] is a stdio MCP server/,
+        ),
+        expect.stringMatching(/: \[telemetry\.collector\] has the kind "otlp"/),
+      ]);
     },
     120_000,
   );

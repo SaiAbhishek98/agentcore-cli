@@ -1,4 +1,5 @@
 import { join, posix } from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { BOX_GATEWAY_BEDROCK_REGION, callsBedrockModel } from "../../../handlers/project/shortcuts";
 import type { ScaffoldRuntimeInput } from "../../../handlers/project/types";
 import { credentialEnvVarName } from "../../../projectSchemas/credential";
@@ -7,7 +8,12 @@ import { boxGatewayName, isBoxProject, type ProjectSpec } from "../../../project
 import { DEFAULT_MODEL_IDS, type ProjectRuntime } from "../../../projectSchemas/runtime";
 import { DEV_PORTS } from "../../dev/port";
 import { PYTHON_ENV } from "../../dev/codezip";
-import type { BoxNetwork, BoxNetworkSource, CloudWatchTelemetry } from "../boxNetwork";
+import type {
+  BoxNetwork,
+  BoxNetworkSource,
+  CloudWatchTelemetry,
+  RuntimeProfileParts,
+} from "../boxNetwork";
 import { modelProviderCredentialName } from "./runtime";
 
 /** Where uv installs the Pythons it manages, as a boxy path. */
@@ -713,6 +719,24 @@ export function renderRuntimeBoxProfile(
       .map((target) => runtimeTelemetrySection(target, profileFile))
       .join("")
   );
+}
+
+/**
+ * The packs that the AgentCore Runtime box profile of `runtime` imports, and the `[agent.env]`
+ * names that it and the box/agentcore pack set, as {@link renderRuntimeBoxProfile} and
+ * {@link renderAgentCorePack} write them.
+ */
+export function runtimeBoxProfileParts(
+  spec: ProjectSpec,
+  runtime: ProjectRuntime,
+): RuntimeProfileParts {
+  type Rendered = { packs?: string[]; agent?: { env?: Record<string, unknown> } };
+  const profile = parseToml(renderRuntimeBoxProfile(spec, runtime)) as Rendered;
+  const pack = parseToml(renderAgentCorePack(spec)) as Rendered;
+  return {
+    packs: profile.packs ?? [],
+    env: [...Object.keys(profile.agent?.env ?? {}), ...Object.keys(pack.agent?.env ?? {})],
+  };
 }
 
 /**

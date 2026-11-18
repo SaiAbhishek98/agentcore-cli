@@ -180,14 +180,47 @@ describe("profilePlaces", () => {
       "egress.github": ".box/agent/local/profile.toml:4:1",
       "egress.dot.name": ".box/agent/local/profile.toml:7:1",
       "egress.inline": ".box/agent/local/profile.toml:11:3",
+      // A key under [agent] is an agent key, not an entry of the table it names.
+      "agent.command": ".box/agent/local/profile.toml:14:1",
+      "agent.mcp": ".box/agent/local/profile.toml:15:1",
       "mcp.tools": ".box/agent/local/profile.toml:17:1",
     });
     expect(places.packs).toBe(".box/agent/local/profile.toml:1:1");
     expect(places.policies).toBe(".box/agent/local/profile.toml:2:1");
   });
 
+  test("places each telemetry target, tool, agent key, and agent variable", () => {
+    const places = profilePlaces(
+      [
+        "[agent]",
+        'command = ["/bin/sh"]',
+        'env.FROM_DOTTED = "1"',
+        "",
+        "[agent.env]",
+        'MODE = "fast"',
+        "",
+        "[tool.uname.filesystem]",
+        "deny_write = []",
+        "",
+        "[telemetry.collector]",
+        'kind = "otlp"',
+      ].join("\n"),
+      PROFILE,
+    );
+
+    expect(Object.fromEntries(places.entries)).toEqual({
+      "agent.command": ".box/agent/local/profile.toml:2:1",
+      "agent.env": ".box/agent/local/profile.toml:3:1",
+      "agent.env.FROM_DOTTED": ".box/agent/local/profile.toml:3:1",
+      "agent.env.MODE": ".box/agent/local/profile.toml:6:1",
+      "tool.uname": ".box/agent/local/profile.toml:8:1",
+      "tool.uname.filesystem": ".box/agent/local/profile.toml:8:1",
+      "telemetry.collector": ".box/agent/local/profile.toml:11:1",
+    });
+  });
+
   test("places no entry, `packs`, or `policies` that the profile does not set", () => {
-    expect(profilePlaces('[agent]\ncommand = ["/bin/sh"]\n', PROFILE)).toEqual({
+    expect(profilePlaces('[profile]\nname = "box"\n', PROFILE)).toEqual({
       entries: new Map(),
     });
   });
