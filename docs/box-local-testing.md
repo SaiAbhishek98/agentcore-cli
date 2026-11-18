@@ -195,8 +195,9 @@ the Runtime profile and its resources under `.box/<runtime>/aws/`.
 - **The AgentCore Runtime profile.** The generated `.box/<runtime>/aws/profile.toml` (copied into
   `.box-dist/`) has one `[egress.<target>]` route through the gateway for each target of
   `<runtime>-box`. For the target of an MCP server, the profile has an `[mcp.<server>]` server
-  through the gateway, not an `[egress]` route. That server keeps its `env://` secret, thus the
-  agent keeps its stand-in key. Each policy file is copied beside it, byte for byte, and listed under `policies`.
+  through the gateway, not an `[egress]` route. Each route and server keeps the `env://` secret
+  of its entry, without `inject`, thus the agent keeps its stand-in key. Box removes the stand-in,
+  and the gateway sends the key. Each policy file is copied beside it, byte for byte, and listed under `policies`.
 - **No-auth targets need a newer L3.** A passthrough target with no outbound auth synthesizes
   only with an `@aws/agentcore-cdk` that accepts it. Until that release is pinned, use a
   local L3 build, as in step 5.

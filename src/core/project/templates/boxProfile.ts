@@ -510,48 +510,76 @@ ${toolDenyWrite}${routes}${bedrockRoute}${keyedRoute}`;
  * `host` to the runtime's Box gateway target of the same name, signing them for
  * the gateway with the execution role; the gateway signs the call to `host`
  * with its own role. Every `[egress.<name>]` on the Runtime is one of these, so
- * every outbound call goes through the Box gateway. Starts with a blank line.
+ * every outbound call goes through the Box gateway. The `env://` secret of the
+ * entry that names `host` stays, as {@link runtimeDestinationSecret} keeps it.
+ * Starts with a blank line.
  */
-function runtimeGatewayRouteSection(target: string, host: string, region: string): string {
+function runtimeGatewayRouteSection(
+  target: string,
+  host: string,
+  region: string,
+  entrySecret?: DestinationSecret,
+): string {
   const key = tomlKey(target);
+  const secret = runtimeDestinationSecret(entrySecret);
+  const variable = entrySecret?.ref.slice("env://".length);
+  const standIn = secret
+    ? `# The agent gets a stand-in for ${variable}, which box removes; the gateway sends the key.\n`
+    : "";
   return `
 # Calls to ${host}, through the runtime's Box gateway's '${target}' target.
-[egress.${key}]
+${standIn}[egress.${key}]
 destinations = [${str(host)}]
-${runtimeGatewayBackend(`egress.${key}`, target, region)}`;
+${secret}${runtimeGatewayBackend(`egress.${key}`, target, region)}`;
 }
 
-/** An HTTP MCP server of the box profile that a Box gateway target serves. */
-type RuntimeMcpServer = { readonly name: string; readonly secret?: McpSource["secret"] };
-type McpSource = Extract<BoxNetworkSource, { kind: "mcp" }>;
+/**
+ * The `[egress]` entry or HTTP `[mcp]` server of the box profile that a Box
+ * gateway target serves, with its own secret.
+ */
+type RuntimeEntry = {
+  readonly kind: "entry" | "mcp";
+  readonly name: string;
+  readonly secret?: DestinationSecret;
+};
+type EntrySource = Exclude<BoxNetworkSource, { kind: "rule" }>;
+type DestinationSecret = NonNullable<EntrySource["secret"]>;
+
+/**
+ * The secret lines of a Runtime route or MCP server for the secret of the entry
+ * it comes from: an `env://` secret stays, so the agent keeps its stand-in and
+ * box removes it; the gateway sends the key. Box refuses a signed secret beside
+ * a backend, and `inject` has no effect there, so neither stays. Each line ends
+ * in a newline.
+ */
+function runtimeDestinationSecret(secret: DestinationSecret | undefined): string {
+  if (!secret?.ref.startsWith("env://")) return "";
+  return Object.entries(secret)
+    .filter(([field, value]) => field !== "inject" && value !== undefined)
+    .map(([field, value]) => `secret.${tomlKey(field)} = ${str(value as string)}\n`)
+    .join("");
+}
 
 /**
  * An HTTP MCP server on the Runtime: the box re-routes the server's calls to
  * `host` to the runtime's Box gateway target, as {@link runtimeGatewayRouteSection}
- * does, and still decides each `mcp:call`, as the server keeps its name. An
- * `env://` secret stays, so the agent keeps its stand-in and box removes it; the
- * gateway sends the key. Box refuses a signed secret beside a backend, and
- * `inject` has no effect there, so neither stays. Starts with a blank line.
+ * does, and still decides each `mcp:call`, as the server keeps its name. Its
+ * `env://` secret stays, as {@link runtimeDestinationSecret} keeps it. Starts
+ * with a blank line.
  */
 function runtimeMcpServerSection(
-  server: RuntimeMcpServer,
+  server: RuntimeEntry,
   target: string,
   host: string,
   region: string,
 ): string {
   const key = tomlKey(server.name);
-  const secret = server.secret?.ref.startsWith("env://")
-    ? Object.entries(server.secret)
-        .filter(([field, value]) => field !== "inject" && value !== undefined)
-        .map(([field, value]) => `secret.${tomlKey(field)} = ${str(value as string)}\n`)
-        .join("")
-    : "";
   return `
 # The MCP server '${server.name}' at ${host}, through the runtime's Box gateway's '${target}' target.
 [mcp.${key}]
 type = "http"
 destinations = [${str(host)}]
-${secret}${runtimeGatewayBackend(`mcp.${key}`, target, region)}`;
+${runtimeDestinationSecret(server.secret)}${runtimeGatewayBackend(`mcp.${key}`, target, region)}`;
 }
 
 /**
@@ -574,8 +602,9 @@ auth.aws.region = ${str(region)}
  * The Runtime routes of a runtime: one for each passthrough target of its Box
  * gateway, `<runtime>-box`, sent to that target, so a target in agentcore.json
  * is what gives the boxed agent a route. A target that serves an HTTP MCP
- * server of `servers` is that `[mcp.<server>]`, and every other target is an
- * `[egress.<target>]`. Build adds the targets the template's calls need (see
+ * server of `entries` is that `[mcp.<server>]`, and every other target is an
+ * `[egress.<target>]`, with the secret of the `[egress]` entry of `entries`
+ * that it serves. Build adds the targets the template's calls need (see
  * `addBoxGatewayTargets`) before it renders. None outside a Box project, which
  * has no Box gateway.
  */
@@ -583,7 +612,7 @@ function runtimeGatewayRoutes(
   spec: ProjectSpec,
   runtime: ProjectRuntime,
   region: string,
-  servers: ReadonlyMap<string, RuntimeMcpServer>,
+  entries: ReadonlyMap<string, RuntimeEntry>,
 ): string {
   if (!isBoxProject(spec)) return "";
   const gateway = spec.agentCoreGateways.find(({ name }) => name === boxGatewayName(runtime.name));
@@ -591,28 +620,32 @@ function runtimeGatewayRoutes(
     .flatMap((target) => {
       if (target.targetType !== "passthrough" || !target.passthrough) return [];
       const host = new URL(target.passthrough.endpoint).host;
-      const server = servers.get(target.name);
+      const entry = entries.get(target.name);
       return [
-        server
-          ? runtimeMcpServerSection(server, target.name, host, region)
-          : runtimeGatewayRouteSection(target.name, host, region),
+        entry?.kind === "mcp"
+          ? runtimeMcpServerSection(entry, target.name, host, region)
+          : runtimeGatewayRouteSection(target.name, host, region, entry?.secret),
       ];
     })
     .join("");
 }
 
-/** The HTTP MCP server each Box gateway target of `hosts` serves, by the target's name. */
-function runtimeMcpServers(hosts: BoxNetwork["hosts"]): Map<string, RuntimeMcpServer> {
-  const servers = new Map<string, RuntimeMcpServer>();
+/**
+ * The `[egress]` entry or HTTP `[mcp]` server that each Box gateway target of
+ * `hosts` serves, by the target's name.
+ */
+function runtimeEntries(hosts: BoxNetwork["hosts"]): Map<string, RuntimeEntry> {
+  const entries = new Map<string, RuntimeEntry>();
   for (const host of hosts) {
-    const source = host.sources.find((s): s is McpSource => s.kind === "mcp");
+    const source = host.sources.find((s): s is EntrySource => s.kind !== "rule");
     if (source === undefined || host.target === undefined) continue;
-    servers.set(host.target, {
-      name: source.mcpEntry,
+    entries.set(host.target, {
+      kind: source.kind,
+      name: source.kind === "mcp" ? source.mcpEntry : source.egressEntry,
       ...(source.secret && { secret: source.secret }),
     });
   }
-  return servers;
+  return entries;
 }
 
 /**
@@ -642,8 +675,8 @@ ${logs}${include}secret.ref = ${str(RUNTIME_AWS_SIGNER)}
  * derived from agentcore.json: the runtime's build, protocol, and model
  * provider, and a route for each passthrough target of its Box gateway; and,
  * from the runtime's Box network model, the box profile's policy files under
- * `policies`, the HTTP MCP server that a target serves, and each CloudWatch
- * `[telemetry]` target. agentcore.json does not record the framework, and the profile
+ * `policies`, the HTTP MCP server that a target serves, the `env://` secret of
+ * the entry that a target serves, and each CloudWatch `[telemetry]` target. agentcore.json does not record the framework, and the profile
  * does not depend on it beyond the container case, so the input names Strands,
  * one of the frameworks that run in a box.
  */
@@ -669,7 +702,7 @@ export function renderRuntimeBoxProfile(
     spec.name,
     input,
     "runtime",
-    runtimeGatewayRoutes(spec, runtime, region, runtimeMcpServers(network?.hosts ?? [])),
+    runtimeGatewayRoutes(spec, runtime, region, runtimeEntries(network?.hosts ?? [])),
     network?.policyFiles,
     network?.region,
   )!;

@@ -542,6 +542,89 @@ describe("renderRuntimeBoxProfile", () => {
     expect(egressOf(project)).toEqual({});
   });
 
+  describe("for an [egress] entry with a secret", () => {
+    const EGRESS_GITHUB = {
+      name: "egress-github",
+      targetType: "passthrough",
+      passthrough: { endpoint: "https://api.github.com", protocolType: "CUSTOM" },
+    } as AgentCoreGatewayTarget;
+    const BACKENDS = [
+      {
+        url: "${{ inputs.gateway.url }}/egress-github",
+        auth: { ref: "aws://", aws: { service: "bedrock-agentcore", region: "us-west-2" } },
+      },
+    ];
+    /** The model's host for the entry `github`, which the target `egress-github` serves. */
+    const githubHost = (secret?: Record<string, string>) =>
+      ({
+        host: "api.github.com",
+        authority: "api.github.com",
+        sources: [
+          {
+            kind: "entry",
+            egressEntry: "github",
+            destinations: ["api.github.com"],
+            ...(secret && { secret }),
+          },
+          { kind: "rule", ruleId: "route_github_connect" },
+        ],
+        outboundAuth: { kind: "none" },
+        reachable: true,
+        target: "egress-github",
+        allowed: 3,
+        samples: 3,
+        forbiddenBy: [],
+        enforcedByBox: [],
+      }) as BoxNetworkHost;
+    const rendered = (secret?: Record<string, string>) => {
+      const project = spec([bedrock, EGRESS_GITHUB]);
+      const text = renderRuntimeBoxProfile(project, project.runtimes[0]!, {
+        policyFiles: [],
+        hosts: [githubHost(secret)],
+      });
+      return { text, egress: (parse(text) as { egress: Egress }).egress };
+    };
+
+    test("keeps the entry's env:// secret on its route, so the agent gets a stand-in", () => {
+      const { text, egress } = rendered({
+        ref: "env://ANTHROPIC_API_KEY",
+        header: "x-api-key",
+        phantom_prefix: "sk-ant-",
+        inject: "always",
+      });
+
+      expect(egress["egress-github"] as unknown).toEqual({
+        destinations: ["api.github.com"],
+        // The gateway sends the key; inject has no effect beside a backend, and Box refuses it.
+        secret: { ref: "env://ANTHROPIC_API_KEY", header: "x-api-key", phantom_prefix: "sk-ant-" },
+        backends: BACKENDS,
+      });
+      expect(text).toContain(
+        "\n# Calls to api.github.com, through the runtime's Box gateway's 'egress-github' target.\n" +
+          "# The agent gets a stand-in for ANTHROPIC_API_KEY, which box removes; the gateway " +
+          "sends the key.\n" +
+          '[egress.egress-github]\ndestinations = ["api.github.com"]\n' +
+          'secret.ref = "env://ANTHROPIC_API_KEY"\nsecret.header = "x-api-key"\n' +
+          'secret.phantom_prefix = "sk-ant-"\n\n' +
+          "[[egress.egress-github.backends]]\n",
+      );
+      // The other routes keep no secret of their own.
+      expect(egress.bedrock?.secret).toBeUndefined();
+    });
+
+    test("keeps no secret of an entry that signs, or has none, as Box refuses a signed one beside a backend", () => {
+      for (const secret of [{ ref: "aws://default" }, undefined]) {
+        const { text, egress } = rendered(secret);
+
+        expect(egress["egress-github"] as unknown).toEqual({
+          destinations: ["api.github.com"],
+          backends: BACKENDS,
+        });
+        expect(text).not.toContain("stand-in for");
+      }
+    });
+  });
+
   describe("for an HTTP MCP server", () => {
     const TOOLS = {
       name: "egress-tools",

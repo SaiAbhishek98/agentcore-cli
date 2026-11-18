@@ -51,12 +51,14 @@ export type BoxNetworkSource =
       readonly kind: "entry";
       readonly egressEntry: string;
       readonly destinations: readonly string[];
+      /** The entry's own secret, whose `env://` stand-in the AgentCore Runtime profile keeps. */
+      readonly secret?: BoxEgressSecret;
     }
   | {
       readonly kind: "mcp";
       readonly mcpEntry: string;
       readonly destinations: readonly string[];
-      /** The server's own secret, which the AgentCore Runtime profile keeps for the agent. */
+      /** The server's own secret, whose `env://` stand-in the AgentCore Runtime profile keeps. */
       readonly secret?: BoxEgressSecret;
     }
   | { readonly kind: "rule"; readonly ruleId: string };
@@ -428,15 +430,16 @@ function hostTargets(
 
 /** The source of the entry that names a host. */
 function entrySource(entry: NonNullable<MappedHost["entry"]>): BoxNetworkSource {
+  const secret = entry.secret && { secret: entry.secret };
   if (entry.table === "egress") {
-    return { kind: "entry", egressEntry: entry.name, destinations: entry.destinations };
+    return {
+      kind: "entry",
+      egressEntry: entry.name,
+      destinations: entry.destinations,
+      ...secret,
+    };
   }
-  return {
-    kind: "mcp",
-    mcpEntry: entry.name,
-    destinations: entry.destinations,
-    ...(entry.secret && { secret: entry.secret }),
-  };
+  return { kind: "mcp", mcpEntry: entry.name, destinations: entry.destinations, ...secret };
 }
 
 /**

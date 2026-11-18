@@ -274,8 +274,10 @@ describe("build writes the Box network of the box profile", () => {
       "bedrock",
       "agentcore",
     ]);
+    // The env:// entry keeps its secret, so the agent gets its stand-in GITHUB_TOKEN there too.
     expect(egress["egress-github"]).toEqual({
       destinations: ["api.github.com"],
+      secret: { ref: "env://GITHUB_TOKEN" },
       backends: GATEWAY_BACKEND("egress-github"),
     });
     expect(egress["egress-httpbin-org"]).toEqual({

@@ -455,7 +455,14 @@ describe("the open routes of the profile", () => {
         "k.example.com:8443",
         "egress-keyed",
         "apiKey",
-        [{ kind: "entry", egressEntry: "keyed", destinations: ["k.example.com:8443"] }],
+        [
+          {
+            kind: "entry",
+            egressEntry: "keyed",
+            destinations: ["k.example.com:8443"],
+            secret: { ref: "env://KEY" },
+          },
+        ],
       ],
       [
         "login.example.com",
