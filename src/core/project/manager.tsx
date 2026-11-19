@@ -61,7 +61,7 @@ import { BoxCliProfileResolver, type BoxProfileResolver } from "./boxProfileReso
 import { BOX_NETWORK_WRITERS, boxNetworkEdits, writeBoxNetworkFiles } from "./boxNetworkWriters";
 import { createProjectTree } from "./templates/project";
 import {
-  boxProfilePath,
+  boxLocalProfilePath,
   boxProfileWarnings,
   boxUvSyncEnv,
   hasBoxProfile,
@@ -2045,9 +2045,9 @@ export class FsProjectManager implements ProjectManager {
   }
 
   /**
-   * Writes the box profile that runs the scaffolded agent into the project's
-   * `.box` folder, named after the project, calling Bedrock in `region`. An
-   * existing profile is the user's, so it is never overwritten.
+   * Writes the box profile that runs the scaffolded agent into the agent's
+   * `.box/<runtime>/local/` folder, named after the project, calling Bedrock in
+   * `region`. An existing profile is the user's, so it is never overwritten.
    */
   private async *writeBoxProfile(
     projectRoot: string,
@@ -2057,7 +2057,7 @@ export class FsProjectManager implements ProjectManager {
   ): AsyncGenerator<ProjectEvent, void> {
     const text = renderBoxProfile(projectName, runtime, region);
     if (text === undefined) return;
-    const path = boxProfilePath(projectRoot);
+    const path = boxLocalProfilePath(projectRoot, runtime.runtimeName);
     if (existsSync(path)) {
       yield { type: "warning", message: `box profile ${path} already exists; left unchanged` };
       return;

@@ -83,6 +83,14 @@ describe("stageBoxContainers", () => {
       `BOX_REPO=${BOX_RELEASE.repo}\nBOX_VERSION=2.0.0\nBOX_ASSET=${BOX_RELEASE.linux.asset}\n` +
         `BOX_SHA256=${BOX_RELEASE.linux.sha256}\n`,
     );
+    // The build context's .box-dist/ is a copy of the runtime's .box/agent/aws/.
+    const aws = join(demo.rootPath, ".box", "agent", "aws");
+    expect((await readdir(aws)).sort()).toEqual(STAGED);
+    for (const file of STAGED) {
+      expect(await readFile(join(aws, file), "utf8")).toBe(
+        await readFile(join(dist, file), "utf8"),
+      );
+    }
   });
 
   test("replaces what an earlier build staged", async () => {
@@ -109,8 +117,8 @@ describe("stageBoxContainers", () => {
   test("copies each policy file of the model beside the profile, for an image that copies .box-dist/ whole", async () => {
     const demo = await project(TEMPLATE_DOCKERFILE);
     await writeFile(join(demo.rootPath, "app", "agent", "start.sh"), START_SH);
-    await mkdir(join(demo.rootPath, ".box"), { recursive: true });
-    await writeFile(join(demo.rootPath, ".box", "policy.dw"), "// rules\n");
+    await mkdir(join(demo.rootPath, ".box", "agent", "local"), { recursive: true });
+    await writeFile(join(demo.rootPath, ".box", "agent", "local", "policy.dw"), "// rules\n");
 
     await stageBoxContainers(demo, [model(["policy.dw"])], releaseOf().releaseFor);
 
@@ -121,8 +129,8 @@ describe("stageBoxContainers", () => {
 
   test("refuses an image that copies only the profile when policy files go with it", async () => {
     const demo = await project(BOX_DOCKERFILE);
-    await mkdir(join(demo.rootPath, ".box"), { recursive: true });
-    await writeFile(join(demo.rootPath, ".box", "policy.dw"), "// rules\n");
+    await mkdir(join(demo.rootPath, ".box", "agent", "local"), { recursive: true });
+    await writeFile(join(demo.rootPath, ".box", "agent", "local", "policy.dw"), "// rules\n");
 
     await expect(
       stageBoxContainers(demo, [model(["policy.dw"])], releaseOf().releaseFor),

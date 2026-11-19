@@ -20,7 +20,9 @@ import { renderRuntimeBoxProfile } from "./templates/boxProfile";
 const FIXTURES = join(import.meta.dir, "__fixtures__");
 const GATEWAY = "agent-python-strands-box-egress";
 const SPEC = "agentcore/agentcore.json";
-const PROFILE = ".box/profile.toml";
+/** The local box folder of the created runtime, from the project root. */
+const LOCAL = ".box/agent_python_strands/local";
+const PROFILE = `${LOCAL}/profile.toml`;
 const RUNTIME_PROFILE = "app/agent_python_strands/.box-dist/profile.toml";
 const HR = 'action == Box::Action::"http:request"';
 const NC = 'action == Box::Action::"net:connect"';
@@ -178,11 +180,11 @@ async function strandsProject(
 const path = (root: string, relative: string) => join(root, ...relative.split("/"));
 const text = (root: string, relative: string) => readFile(path(root, relative), "utf8");
 
-/** Adds `tables` to the end of the profile, `top` to its start, and writes `.box/policy.dw`. */
+/** Adds `tables` to the end of the profile, `top` to its start, and writes its `policy.dw`. */
 async function editProfile(root: string, edit: { top?: string; tables?: string; policy?: string }) {
   const profile = await text(root, PROFILE);
   await writeFile(path(root, PROFILE), `${edit.top ?? ""}${profile}${edit.tables ?? ""}`);
-  if (edit.policy !== undefined) await writeFile(path(root, ".box/policy.dw"), edit.policy);
+  if (edit.policy !== undefined) await writeFile(path(root, `${LOCAL}/policy.dw`), edit.policy);
 }
 
 /** Changes the Box gateway entry of agentcore.json, as a user does by hand. */
@@ -213,11 +215,11 @@ async function runtimeProfile(root: string): Promise<Record<string, unknown>> {
   return parse(await text(root, RUNTIME_PROFILE)) as Record<string, unknown>;
 }
 
-/** The text of every file under `.box/`, by path. */
+/** The text of every file in the runtime's local box folder, by path. */
 async function boxFiles(root: string): Promise<Record<string, string>> {
-  const names = (await readdir(path(root, ".box"))).sort();
+  const names = (await readdir(path(root, LOCAL))).sort();
   return Object.fromEntries(
-    await Promise.all(names.map(async (name) => [name, await text(root, `.box/${name}`)])),
+    await Promise.all(names.map(async (name) => [name, await text(root, `${LOCAL}/${name}`)])),
   );
 }
 
@@ -544,7 +546,7 @@ describe("build writes the Box network of the box profile", () => {
         "agentcore/agentcore.json  The gateway target 'gh' for api.github.com sends no " +
         "credential, and [egress.github] sends the API key credential 'github' in the header " +
         "Authorization with the prefix Bearer. Make the two the same, in agentcore.json or in " +
-        ".box/profile.toml.",
+        ".box/agent_python_strands/local/profile.toml.",
     );
     expect(await text(root, SPEC)).toBe(spec);
   });
@@ -715,7 +717,7 @@ describe("build writes the telemetry policy of the box profile", () => {
         TRACES_STATEMENT,
       ]);
       expect(warnings).toContain(
-        ".box/profile.toml: [telemetry.logs] has no region, so the AgentCore Runtime profile and " +
+        `${PROFILE}: [telemetry.logs] has no region, so the AgentCore Runtime profile and ` +
           "the telemetry policy get eu-central-1. Deploy sets the region of its deploy target. " +
           "Box refuses a CloudWatch target with no region, so `agentcore dev` cannot run this " +
           "profile until you add region to it.",
@@ -804,7 +806,7 @@ describe("build reads the box profile as box resolves it", () => {
   test("stops with box's error when box refuses the profile, and writes nothing", async () => {
     const { manager, root, counter, box } = await strandsProject();
     box.answer = new InvalidEnvironmentError(
-      "`box profile show .box/profile.toml --format json --full` failed in the project (exit code 1)",
+      `\`box profile show ${PROFILE} --format json --full\` failed in the project (exit code 1)`,
     );
     const spec = await text(root, SPEC);
 

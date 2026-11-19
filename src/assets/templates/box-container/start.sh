@@ -8,7 +8,7 @@
 #   /opt/box/                          box, its two helpers, resources/ (its packs), this script, and
 #                                      the Dogwood policy files the profile's `policies` names
 #   /opt/box/profile.toml              on AgentCore Runtime: rendered from agentcore.json at deploy
-#                                      under `agentcore dev`: the project's .box/profile.toml
+#                                      under `agentcore dev`: the runtime's .box/<runtime>/local/profile.toml
 #   ~/box-profile/                     profile.toml, that profile with the deployed values on
 #                                      AgentCore Runtime, and a copy of each policy file it names
 #   ~/.aws/credentials                 on AgentCore Runtime: profile [default], the execution role

@@ -13,8 +13,8 @@
 #       ├── ffi/                       _ctypes and a libffi that Box Core's W^X filter allows
 #       ├── profile.toml               rendered from agentcore.json, with @CODE@, @PYTHON@,
 #       │                              @PYTHON_PREFIX@ and @GATEWAY_BOX_URL@ for this script
-#       └── <policy files>             the Dogwood files of .box/profile.toml, unchanged, which
-#                                      the profile's `policies` names
+#       └── <policy files>             the Dogwood files of .box/<runtime>/local/profile.toml,
+#                                      unchanged, which the profile's `policies` names
 #
 #   /tmp/box/                          written here; gone with the microVM
 #   ├── profile/                       the filled profile, which box run takes by path, and a

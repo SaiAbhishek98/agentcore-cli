@@ -33,7 +33,7 @@ import {
   boxTelemetryPolicyFile,
   placeBoxTelemetryPolicy,
 } from "./boxTelemetry";
-import { renderRuntimeBoxProfile } from "./templates/boxProfile";
+import { boxLocalDir, renderRuntimeBoxProfile } from "./templates/boxProfile";
 
 /** Something exactly one writer owns. */
 export type BoxNetworkOutput =
@@ -340,7 +340,7 @@ export interface StagedRuntime {
 
 /**
  * The AgentCore Runtime box profile of each staged runtime, and a byte copy of each policy file
- * its profile names, beside it at the same path.
+ * that the runtime's own local box profile names, beside it at the same path.
  */
 export function runtimeProfileWriter(staged: readonly StagedRuntime[]): BoxNetworkWriter {
   const networkOf = (networks: readonly BoxNetwork[], runtime: string) =>
@@ -363,7 +363,7 @@ export function runtimeProfileWriter(staged: readonly StagedRuntime[]): BoxNetwo
           { path: `${dist}/profile.toml`, text: renderRuntimeBoxProfile(spec, entry, network) },
           ...(network?.policyFiles ?? []).map((file) => ({
             path: `${dist}/${file}`,
-            copyOf: `.box/${file}`,
+            copyOf: `${boxLocalDir(runtime)}/${file}`,
           })),
         ];
       }),

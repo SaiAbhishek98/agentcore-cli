@@ -42,9 +42,9 @@ COPY --chown=bedrock_agentcore:bedrock_agentcore . .
 RUN uv sync --frozen --no-dev && /usr/local/bin/python -m pip uninstall -y uv
 
 # The AgentCore Runtime box profile and the policy files it names, which build and deploy stage
-# beside this file; dev stages the project's .box/profile.toml. The folder is copied whole, so each
-# policy file stays beside the profile. start.sh runs box with the profile's path, outside /app, the
-# workspace.
+# beside this file; dev stages the runtime's .box/<runtime>/local/profile.toml. The folder is
+# copied whole, so each policy file stays beside the profile. start.sh runs box with the profile's
+# path, outside /app, the workspace.
 COPY ${BOX_DIST}/ /opt/box/
 RUN /opt/box/box --version
 COPY start.sh /opt/box/
