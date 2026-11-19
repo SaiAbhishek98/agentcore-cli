@@ -42,8 +42,7 @@ export async function createProjectTree(
       throw new InputValidationError(`unable to find template that matches given parameters`);
 
     const template = await resolver.resolve(runtimeConfig);
-    if (startsInBoxOnCodeZip(options.runtime)) withBoxStartScript(config, template);
-    if (isBoxedContainer(options.runtime)) withBoxContainerStartScript(config, template);
+    withBoxStart(config, template, options.runtime);
     // A runtime that gets a box profile runs its agent in a box, so its template is a Box template.
     // Until the box templates make Box projects opt-in, that is every Python CodeZip template and
     // the Strands container template.
@@ -85,9 +84,22 @@ export async function createProjectTree(
 }
 
 /**
+ * Adds to `template` the start scripts and the box release that run the agent of `runtime` in a
+ * box on AgentCore Runtime, when `runtime` is a box template. Create calls it, and so does
+ * `add runtime` in a Box project, because each writes the runtime's box profile too.
+ */
+export function withBoxStart(
+  config: CreateProjectConfig,
+  template: Template,
+  runtime: ScaffoldRuntimeInput,
+): void {
+  if (startsInBoxOnCodeZip(runtime)) withBoxStartScript(config, template);
+  if (isBoxedContainer(runtime)) withBoxContainerStartScript(config, template);
+}
+
+/**
  * Starts the runtime's agent in a box on a CodeZip deploy: start.py, the
  * entry point, runs start.sh, which runs `box run` with what deploy stages.
- * Create alone writes them, because only create writes the box profiles.
  * start.sh is kept as box-start.sh in the assets: the standalone binary embeds
  * each asset under its folder and stem, and start.py already has that stem.
  */

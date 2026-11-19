@@ -24,10 +24,10 @@ type BoxDevRunnerConfig = {
 /**
  * Runs a CodeZip agent with `box run .box/<runtime>/local/profile.toml` in the
  * project folder when the runtime has that box profile, the one `agentcore
- * create` writes, and with the fallback runner otherwise. `box` is the one on
- * PATH, which the user installs from the box release. The box listens on the
- * profile's ingress port and relays to the agent, so the dev port must be that
- * port.
+ * create` or `agentcore add runtime` writes, and with the fallback runner
+ * otherwise. `box` is the one on PATH, which the user installs from the box
+ * release. The box listens on the profile's ingress port and relays to the
+ * agent, so the dev port must be that port.
  */
 export class BoxDevRunner implements DevRunner {
   private readonly fallback: DevRunner;
