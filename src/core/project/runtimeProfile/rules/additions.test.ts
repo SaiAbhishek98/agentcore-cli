@@ -5,11 +5,9 @@ import type { AgentCoreGatewayTarget } from "../../../../projectSchemas/gateway"
 import { boxGatewaySpec, type ProjectSpec } from "../../../../projectSchemas/project";
 import type { ProjectRuntime } from "../../../../projectSchemas/runtime";
 import { cloudWatchTelemetry, withDeployRegion, type CloudWatchTelemetry } from "../../boxNetwork";
-import {
-  renderAgentCorePack,
-  renderBoxProfile,
-  renderRuntimeBoxProfile,
-} from "../../templates/boxProfile";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { renderAgentCorePack, renderBoxProfile } from "../../templates/boxProfile";
 import { runtimeProfileContext } from "../context";
 import { deriveRuntimeProfile } from "../derive";
 import { serializeRuntimeProfile } from "../serialize";
@@ -98,7 +96,7 @@ function createdProfile(runtime: ProjectRuntime): TomlTable {
     modelProvider: runtime.modelProvider,
     boxTemplate: true,
   } as ScaffoldRuntimeInput;
-  return parse(renderBoxProfile("demo", input, CREATE_REGION, "local")!) as TomlTable;
+  return parse(renderBoxProfile("demo", input, CREATE_REGION)!) as TomlTable;
 }
 
 /** The `[telemetry]` of a local profile: a CloudWatch target of each kind, signed under dev. */
@@ -134,6 +132,15 @@ const TELEMETRY_CASES: Record<string, TomlTable | undefined> = {
   "traces only": { "x-ray": CLOUDWATCH["x-ray"] },
 };
 
+/**
+ * What the Runtime renderer that the derivation replaced wrote for each created template, and for
+ * the gateway fixture: recorded from renderRuntimeBoxProfile, with the default telemetry target,
+ * before that renderer was deleted.
+ */
+const OLD_RENDERER = JSON.parse(
+  readFileSync(join(import.meta.dir, "..", "__fixtures__", "old-renderer-tables.json"), "utf8"),
+) as { templates: Record<string, TomlTable>; gateway: Record<string, TomlTable> };
+
 /** The tables that the additions rule owns, which the old renderer wrote. */
 const OWNED = ["packs", "policies", "profile", "options", "agent", "telemetry"] as const;
 
@@ -167,7 +174,7 @@ describe("deriveRuntimeProfile on the created templates", () => {
   );
 
   test.each(cases)(
-    "gives the tables the old renderer wrote, and the default target with no cloudwatch_logs target ($build $protocol $provider, memories $memories, telemetry $telemetry)",
+    "gives the tables the old renderer wrote (recorded in __fixtures__), and the default target with no cloudwatch_logs target ($build $protocol $provider, memories $memories, telemetry $telemetry)",
     ({ build, protocol, provider, memories, telemetry: telemetryCase }) => {
       const runtime = runtimeOf(build, protocol, provider);
       const local = createdProfile(runtime);
@@ -183,28 +190,17 @@ describe("deriveRuntimeProfile on the created templates", () => {
         PROFILE_FILE,
       ).telemetry;
       const policyFiles = extras ? ["policy.dw"] : [];
-      const spec = specOf(runtime, memories);
-      const old = parse(
-        renderRuntimeBoxProfile(spec, runtime, {
-          policyFiles,
-          region: BUILD_REGION,
-          hosts: [],
-          telemetry,
-        }),
-      ) as TomlTable;
-
       const { profile, problems } = deriveRuntimeProfile(
         local,
         contextOf(runtime, { memories, telemetry, policyFiles }),
       );
 
-      const logs = telemetry.some(({ kind }) => kind === "cloudwatch_logs");
-      const expected: TomlTable = {
-        ...old,
-        telemetry: { ...(old.telemetry as TomlTable), ...(!logs && { agentcore: DEFAULT_TARGET }) },
-      };
+      const expected = OLD_RENDERER.templates[
+        `${build} ${protocol} ${provider} memories=${memories.length} telemetry=${telemetryCase}`
+      ] as TomlTable;
       expect(problems).toEqual([]);
-      for (const key of OWNED) expect([key, profile[key]]).toEqual([key, expected[key]]);
+      for (const key of OWNED)
+        expect([key, profile[key]]).toEqual([key, expected[key] ?? undefined]);
     },
   );
 });
@@ -285,19 +281,27 @@ describe("the additions rule", () => {
   });
 
   describe("[agent] command", () => {
-    test("gives the template's own command its Runtime command", () => {
-      expect(agentOf(apply(createdProfile(CODEZIP), contextOf(CODEZIP)).table).command).toEqual([
-        "${{ inputs.python.path }}",
+    test("gives the template's own command its Runtime command, which the paths rule then moves", () => {
+      const runtimeCommand = (app: string, python: string) => [
+        python,
         "-m",
         "uvicorn",
         "main:app",
         "--app-dir",
-        "${{ inputs.code.dir }}",
+        app,
         "--host",
         "127.0.0.1",
         "--port",
         "8081",
-      ]);
+      ];
+      const local = createdProfile(CODEZIP);
+
+      expect(agentOf(apply(local, contextOf(CODEZIP)).table).command).toEqual(
+        runtimeCommand("${{ workspace }}/app/agent", "${{ workspace }}/app/agent/.venv/bin/python"),
+      );
+      expect(agentOf(deriveRuntimeProfile(local, contextOf(CODEZIP)).profile).command).toEqual(
+        runtimeCommand("${{ inputs.code.dir }}", "${{ inputs.python.path }}"),
+      );
     });
 
     test("removes --reload and --reload-dir from a command of the user, and moves no path", () => {
@@ -415,14 +419,27 @@ describe("the additions rule", () => {
 
       expect(agentOf(apply(local, contextOf(CODEZIP)).table).filesystem).toEqual({
         read: [
-          "${{ inputs.code.dir }}",
-          "${{ inputs.python.prefix }}",
+          "${{ workspace }}/app/agent",
+          "${{ home }}/.local/share/uv/python",
           "/usr/lib64",
           "/lib64",
           "${{ workspace }}/app/agent/data",
         ],
-        exec: ["${{ inputs.code.dir }}", "${{ inputs.python.prefix }}"],
+        exec: ["${{ workspace }}/app/agent", "${{ home }}/.local/share/uv/python"],
         deny_write: ["${{ workspace }}/app/agent/secrets"],
+        write: ["/tmp/agent"],
+      });
+      // The paths rule moves each path of the project after this rule.
+      expect(agentOf(deriveRuntimeProfile(local, contextOf(CODEZIP)).profile).filesystem).toEqual({
+        read: [
+          "${{ inputs.code.dir }}",
+          "${{ inputs.python.prefix }}",
+          "/usr/lib64",
+          "/lib64",
+          "${{ inputs.code.dir }}/data",
+        ],
+        exec: ["${{ inputs.code.dir }}", "${{ inputs.python.prefix }}"],
+        deny_write: ["${{ inputs.code.dir }}/secrets"],
         write: ["/tmp/agent"],
       });
     });
