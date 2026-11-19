@@ -9,7 +9,7 @@ import { credentialEnvVarName } from "../../../projectSchemas/credential";
 import { isBoxProject, type ProjectSpec } from "../../../projectSchemas/project";
 import { DEFAULT_MODEL_IDS, type ProjectRuntime } from "../../../projectSchemas/runtime";
 import { DEV_PORTS } from "../../dev/port";
-import type { BoxNetwork } from "../boxNetwork";
+import type { BoxHostSource, BoxNetwork } from "../boxNetwork";
 import { PYTHON_ENV } from "../../dev/codezip";
 import { modelProviderCredentialName } from "./runtime";
 
@@ -483,8 +483,50 @@ function runtimeGatewayRouteSection(gatewayName: string, target: string, host: s
 # Calls to ${host}, through the '${gatewayName}' gateway's '${target}' target.
 [egress.${key}]
 destinations = [${str(host)}]
+${runtimeGatewayBackend(`egress.${key}`, target)}`;
+}
 
-[[egress.${key}.backends]]
+/** An HTTP MCP server of the box profile that a Box gateway target serves. */
+type RuntimeMcpServer = { readonly name: string; readonly secret?: McpSource["secret"] };
+type McpSource = Extract<BoxHostSource, { kind: "mcp" }>;
+
+/**
+ * An HTTP MCP server on the Runtime: the box sends the server's calls to `host`
+ * to the runtime's Box gateway target, as {@link runtimeGatewayRouteSection}
+ * does, and still decides each `mcp:call`, as the server keeps its name. An
+ * `env://` secret stays, so the agent keeps its stand-in and box removes it; the
+ * gateway sends the key. Box refuses a signed secret beside a backend, and
+ * `inject` has no effect there, so neither stays. Starts with a blank line.
+ */
+function runtimeMcpServerSection(
+  gatewayName: string,
+  server: RuntimeMcpServer,
+  target: string,
+  host: string,
+): string {
+  const key = tomlKey(server.name);
+  const secret = server.secret?.ref.startsWith("env://")
+    ? Object.entries(server.secret)
+        .filter(([field, value]) => field !== "inject" && value !== undefined)
+        .map(([field, value]) => `secret.${tomlKey(field)} = ${str(value as string)}\n`)
+        .join("")
+    : "";
+  return `
+# The MCP server '${server.name}' at ${host}, through the '${gatewayName}' gateway's '${target}' target.
+[mcp.${key}]
+type = "http"
+destinations = [${str(host)}]
+${secret}${runtimeGatewayBackend(`mcp.${key}`, target)}`;
+}
+
+/**
+ * The backend of a Runtime route or MCP server: the runtime's Box gateway
+ * target, signed for the gateway with the execution role. Starts with a blank
+ * line.
+ */
+function runtimeGatewayBackend(table: string, target: string): string {
+  return `
+[[${table}.backends]]
 url = ${str(`${BOX_GATEWAY_URL_PLACEHOLDER}/${target}`)}
 auth.ref = ${str(RUNTIME_AWS_SIGNER)}
 auth.aws.service = "bedrock-agentcore"
@@ -495,8 +537,10 @@ auth.aws.region = ${str(DEFAULT_EGRESS_BEDROCK_REGION)}
 /**
  * The Runtime routes of a runtime: one for each passthrough target of its Box gateway (the
  * gateway bound to it), named for the target and sent to it, so a target in agentcore.json is
- * what gives the boxed agent a route. Build adds the targets it needs, such as Memory's
- * `agentcore`, before it renders. Other target types get no route. None outside a Box project.
+ * what gives the boxed agent a route. A target that serves an HTTP MCP server of `servers` is
+ * that `[mcp.<server>]`, and every other target is an `[egress.<target>]`. Build adds the targets
+ * it needs, such as Memory's `agentcore`, before it renders. Other target types get no route.
+ * None outside a Box project.
  *
  * The agent still calls Bedrock directly with the execution role, so a passthrough target named
  * `bedrock` is refused when the agent calls Bedrock: its route would replace that one.
@@ -505,6 +549,7 @@ function runtimeGatewayRoutes(
   spec: ProjectSpec,
   runtime: ProjectRuntime,
   callsBedrock: boolean,
+  servers: ReadonlyMap<string, RuntimeMcpServer>,
 ): string {
   if (!isBoxProject(spec)) return "";
   const gateway = spec.agentCoreGateways.find(({ boundRuntime }) => boundRuntime === runtime.name);
@@ -534,8 +579,27 @@ function runtimeGatewayRoutes(
     byHost.set(hostOf(target), target.name);
   }
   return targets
-    .map((target) => runtimeGatewayRouteSection(gateway.name, target.name, hostOf(target)))
+    .map((target) => {
+      const server = servers.get(target.name);
+      return server
+        ? runtimeMcpServerSection(gateway.name, server, target.name, hostOf(target))
+        : runtimeGatewayRouteSection(gateway.name, target.name, hostOf(target));
+    })
     .join("");
+}
+
+/** The HTTP MCP server each Box gateway target of `hosts` serves, by the target's name. */
+function runtimeMcpServers(hosts: BoxNetwork["hosts"]): Map<string, RuntimeMcpServer> {
+  const servers = new Map<string, RuntimeMcpServer>();
+  for (const host of hosts) {
+    const source = host.sources.find((s): s is McpSource => s.kind === "mcp");
+    if (source === undefined || host.target === undefined) continue;
+    servers.set(host.target, {
+      name: source.mcpEntry,
+      ...(source.secret && { secret: source.secret }),
+    });
+  }
+  return servers;
 }
 
 /**
@@ -543,7 +607,8 @@ function runtimeGatewayRoutes(
  * derived from agentcore.json: the runtime's build, protocol, and model
  * provider, and a route for each passthrough target of its Box gateway (see
  * `runtimeGatewayRoutes`); and, from the runtime's Box network model, the box
- * profile's policy files under `policies`. agentcore.json does not
+ * profile's policy files under `policies`, and the HTTP MCP server that a
+ * target serves. agentcore.json does not
  * record the framework, and the profile does not depend on it beyond the
  * container case, so the input names Strands, one of the frameworks that run
  * in a box.
@@ -551,7 +616,7 @@ function runtimeGatewayRoutes(
 export function renderRuntimeBoxProfile(
   spec: ProjectSpec,
   runtime: ProjectRuntime,
-  network?: Pick<BoxNetwork, "policyFiles">,
+  network?: Pick<BoxNetwork, "policyFiles"> & Partial<Pick<BoxNetwork, "hosts">>,
 ): string {
   const input = {
     runtimeName: runtime.name,
@@ -567,7 +632,12 @@ export function renderRuntimeBoxProfile(
     input,
     DEFAULT_EGRESS_BEDROCK_REGION,
     "runtime",
-    runtimeGatewayRoutes(spec, runtime, writesBedrockRoute(input)),
+    runtimeGatewayRoutes(
+      spec,
+      runtime,
+      writesBedrockRoute(input),
+      runtimeMcpServers(network?.hosts ?? []),
+    ),
     network?.policyFiles,
   )!;
 }
