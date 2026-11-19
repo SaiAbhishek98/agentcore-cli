@@ -200,9 +200,11 @@ declares, not the ones you add in the stack.
 Two templates run their agent in a box, both under `agentcore dev` and on AgentCore Runtime:
 `agent-python-strands-box` (CodeZip) and `agent-python-strands-box-container` (Container).
 `agentcore create --template <name>` makes a Box project from either; every other template runs
-its agent without box. A Box project holds that one runtime, so `agentcore add runtime` and
-`agentcore export harness` refuse it. The runtime needs its `"box": { "version": ... }` in
-`agentcore.json`, which create writes; build and deploy stop without it. box comes from the public GitHub release `v0.1.11-linux-preview.6` of
+its agent without box. Every runtime of a Box project runs in a box, with its own box profile,
+`.box/<runtime>/local/profile.toml`. `agentcore add runtime` and `agentcore export harness` give
+a Python runtime that profile, its `"box": { "version": ... }` in `agentcore.json`, and `start.py`
+for CodeZip, as create does, and refuse a runtime that cannot run in a box (TypeScript). Build and
+deploy stop for a runtime with no `box.version`, or with `box.version` and no profile. box comes from the public GitHub release `v0.1.11-linux-preview.6` of
 [mquang-amazon/box-releases](https://github.com/mquang-amazon/box-releases). No token or account
 is needed to download it.
 

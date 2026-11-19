@@ -42,8 +42,7 @@ export async function createProjectTree(
       throw new InputValidationError(`unable to find template that matches given parameters`);
 
     const template = await resolver.resolve(runtimeConfig);
-    if (startsInBoxOnCodeZip(options.runtime)) withBoxStartScript(config, template);
-    if (isBoxedContainer(options.runtime)) withBoxContainerBoxVersion(template);
+    withBoxStart(config, template, options.runtime);
     // Only a box template (agent-python-strands-box or agent-python-strands-box-container) runs its
     // agent in a box, so only it makes a Box project.
     templates.push(
@@ -84,9 +83,22 @@ export async function createProjectTree(
 }
 
 /**
+ * Adds to `template` the box release that runs the agent of `runtime` in a box, and, for a
+ * CodeZip deploy, start.py, its entry point, when `runtime` is a box template. Create calls it,
+ * and so does `add runtime` in a Box project, because each writes the runtime's box profile too.
+ */
+export function withBoxStart(
+  config: CreateProjectConfig,
+  template: Template,
+  runtime: ScaffoldRuntimeInput,
+): void {
+  if (startsInBoxOnCodeZip(runtime)) withBoxStartScript(config, template);
+  if (isBoxedContainer(runtime)) withBoxContainerBoxVersion(template);
+}
+
+/**
  * Starts the runtime's agent in a box on a CodeZip deploy: start.py, the
- * entry point, runs `box run` with what deploy stages. Create alone writes it,
- * because only create writes the box profiles.
+ * entry point, runs `box run` with what deploy stages.
  */
 function withBoxStartScript(config: CreateProjectConfig, template: Template): void {
   // start.py is the Runtime's entry point: it sets HOME and a writable workspace, exports the

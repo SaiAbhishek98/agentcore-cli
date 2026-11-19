@@ -14,6 +14,7 @@ import { resolveRuntimeTemplateShortcut } from "../../handlers/project/shortcuts
 import type { ExportHarnessInput, Project, ProjectEvent } from "../../handlers/project/types";
 import { HarnessSpecSchema } from "../../projectSchemas/harness";
 import { readEnvFile } from "../../io/envFile";
+import { BOX_RELEASE } from "./backends/boxRelease";
 
 const originalCwd = process.cwd();
 const tempDirectories: string[] = [];
@@ -488,19 +489,32 @@ describe("FsProjectManager.exportHarness rendered tree", () => {
     );
   });
 
-  test("refuses to export a harness into a Box project, which holds one runtime", async () => {
+  test("puts the exported runtime of a Box project in a box, with its own Box gateway and box profile", async () => {
     const { manager: subject } = manager();
     // A box template makes a Box project.
     const project = await projectWithHarness(subject, {}, "agent-python-strands-box");
     expect(project.spec.projectType).toBe("box");
-    const before = await Bun.file(join(project.rootPath, "agentcore", "agentcore.json")).text();
 
-    await expect(drain(subject.exportHarness(project, exportInput()))).rejects.toThrow(
-      "cannot add the exported harness as a runtime: a Box project holds one runtime",
-    );
-    expect(await Bun.file(join(project.rootPath, "agentcore", "agentcore.json")).text()).toBe(
-      before,
-    );
+    await drain(subject.exportHarness(project, exportInput()));
+
+    const spec = (await Bun.file(join(project.rootPath, "agentcore", "agentcore.json")).json()) as {
+      agentCoreGateways: { name: string }[];
+      runtimes: { name: string; entrypoint: string; box?: { version: string } }[];
+    };
+    const gateway = spec.agentCoreGateways.find(({ name }) => name === "assistantAgent-box-egress");
+    expect(gateway).toMatchObject({
+      boundRuntime: "assistantAgent",
+      discoveryPrefix: "AGENTCORE_GATEWAY_BOX",
+      targets: [],
+    });
+    expect(spec.runtimes.find(({ name }) => name === "assistantAgent")).toMatchObject({
+      entrypoint: "start.py",
+      box: { version: BOX_RELEASE.version },
+    });
+    expect(existsSync(join(project.rootPath, "app", "assistantAgent", "start.py"))).toBe(true);
+    expect(
+      existsSync(join(project.rootPath, ".box", "assistantAgent", "local", "profile.toml")),
+    ).toBe(true);
   });
 
   test("loads only the MCP tools allowedTools selects", async () => {
