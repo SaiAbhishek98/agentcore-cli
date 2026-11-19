@@ -925,6 +925,133 @@ describe("FsProjectManager.create box profile", () => {
   });
 });
 
+describe("FsProjectManager.addResource box runtime", () => {
+  // The Python CodeZip agent of a Bedrock Agent import, the template `add runtime` scaffolds.
+  const SECOND = { ...AGENT_PYTHON, runtimeName: "second" };
+  const addSecond = (overrides: Record<string, unknown> = {}): AddResourceInput => ({
+    resourceType: "runtime",
+    resourceConfig: { name: "second", ...overrides, scaffoldRuntimeInput: SECOND },
+  });
+
+  /** A project at `example/` whose first runtime is `agent`, from `template`. */
+  async function created(subject: FsProjectManager, template?: ScaffoldRuntimeInput) {
+    await inTempDirectory();
+    const { project } = await runCreate(subject, {
+      name: "example",
+      ...(template && { scaffoldRuntimeInput: { ...template, runtimeName: "agent" } }),
+      skipInstall: true,
+      skipGit: true,
+    } as CreateProjectInput);
+    return project;
+  }
+
+  async function events(iterator: AsyncGenerator<ProjectEvent, Project>) {
+    const all: ProjectEvent[] = [];
+    let next = await iterator.next();
+    while (!next.done) {
+      all.push(next.value);
+      next = await iterator.next();
+    }
+    return { events: all, project: next.value };
+  }
+
+  test("gives a runtime added to a Box project its own box profile, box.version and start.py", async () => {
+    const { manager: subject } = manager({ AWS_REGION: "ap-southeast-2" });
+    const project = await created(subject, AGENT_PYTHON_STRANDS_BOX);
+    const first = join(project.rootPath, boxLocalProfileFile("agent"));
+    const firstText = await readFile(first, "utf8");
+
+    const added = await events(subject.addResource(project, addSecond()));
+
+    const path = join(project.rootPath, boxLocalProfileFile("second"));
+    expect(await readFile(path, "utf8")).toBe(
+      renderBoxProfile("example", { ...SECOND, boxTemplate: true }, "ap-southeast-2")!,
+    );
+    expect(added.events).toContainEqual({ type: "step", message: `writing box profile ${path}` });
+    expect(await readFile(first, "utf8")).toBe(firstText);
+    const appDir = join(project.rootPath, "app", "second");
+    // start.py is the CodeZip entry point that runs `box run`; there is no start script.
+    expect(existsSync(join(appDir, "start.py"))).toBe(true);
+    expect(existsSync(join(appDir, "start.sh"))).toBe(false);
+    expect(added.project.spec.runtimes.find(({ name }) => name === "second")).toMatchObject({
+      entrypoint: "start.py",
+      box: { version: BOX_RELEASE.version },
+    });
+  });
+
+  test("keeps a box profile that is already there", async () => {
+    const { manager: subject } = manager();
+    const project = await created(subject, AGENT_PYTHON_STRANDS_BOX);
+    const path = join(project.rootPath, boxLocalProfileFile("second"));
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, "# mine\n");
+
+    const added = await events(subject.addResource(project, addSecond()));
+
+    expect(await readFile(path, "utf8")).toBe("# mine\n");
+    expect(added.events).toContainEqual({
+      type: "warning",
+      message: `box profile ${path} already exists; left unchanged`,
+    });
+  });
+
+  test("a box runtime that fails to commit leaves no box profile behind", async () => {
+    const { manager: subject } = manager();
+    const project = await created(subject, AGENT_PYTHON_STRANDS_BOX);
+
+    await expect(runAdd(subject, project, addSecond({ networkMode: "VPC" }))).rejects.toThrow(
+      "networkConfig is required when networkMode is VPC",
+    );
+
+    expect(existsSync(join(project.rootPath, ".box", "second"))).toBe(false);
+    expect(existsSync(join(project.rootPath, boxLocalProfileFile("agent")))).toBe(true);
+  });
+
+  test.each([
+    ["a project with no runtime", undefined],
+    ["a project of a Python template without box", AGENT_PYTHON_STRANDS],
+    ["a project of a template with no box profile", AGENT_TYPESCRIPT_STRANDS],
+  ])("runs a Python runtime added to %s without a box", async (_label, template) => {
+    const { manager: subject } = manager();
+    const project = await created(subject, template);
+
+    const updated = await runAdd(subject, project, addSecond());
+
+    expect(existsSync(join(project.rootPath, ".box"))).toBe(false);
+    expect(existsSync(join(project.rootPath, "app", "second", "start.py"))).toBe(false);
+    const runtime = updated.spec.runtimes.find(({ name }) => name === "second");
+    expect(runtime?.entrypoint).not.toBe("start.py");
+    expect(runtime?.box).toBeUndefined();
+  });
+
+  test.each([
+    ["warns that it runs without a box in a Box project", AGENT_PYTHON_STRANDS_BOX, true],
+    ["says nothing of a box in another project", AGENT_PYTHON_STRANDS, false],
+  ])("a runtime whose code the user writes %s", async (_label, template, boxed) => {
+    const { manager: subject } = manager();
+    const project = await created(subject, template);
+
+    const added = await events(
+      subject.addResource(project, {
+        resourceType: "runtime",
+        resourceConfig: { name: "second", language: "Python", protocol: "HTTP" },
+      }),
+    );
+
+    const warning: ProjectEvent = {
+      type: "warning",
+      message:
+        "runtime 'second' runs its agent without a box, under `agentcore dev` and on AgentCore " +
+        "Runtime: `agentcore add runtime` writes no box profile (.box/second/local/profile.toml) " +
+        "and no box.version for a runtime whose code you write",
+    };
+    expect(added.events.filter(({ type }) => type === "warning")).toEqual(boxed ? [warning] : []);
+    expect(existsSync(join(project.rootPath, ".box", "second"))).toBe(false);
+    const runtime = added.project.spec.runtimes.find(({ name }) => name === "second");
+    expect(runtime?.box).toBeUndefined();
+  });
+});
+
 describe("FsProjectManager.addResource", () => {
   test("applies a runtime template profile and defers its dependency setup", async () => {
     await inTempDirectory();

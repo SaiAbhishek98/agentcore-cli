@@ -59,8 +59,10 @@ import { boxNetworkFailureMessage, readBoxNetworks } from "./boxNetworkSource";
 import { DEFAULT_REGION, regionFromConfigFile } from "../region";
 import { BoxCliProfileResolver, type BoxProfileResolver } from "./boxProfileResolver";
 import { BOX_NETWORK_WRITERS, boxNetworkEdits, writeBoxNetworkFiles } from "./boxNetworkWriters";
-import { createProjectTree } from "./templates/project";
+import { createProjectTree, withBoxStart } from "./templates/project";
 import {
+  addedBoxRuntimeInput,
+  boxLocalProfileFile,
   boxLocalProfilePath,
   boxProfileWarnings,
   boxUvSyncEnv,
@@ -862,6 +864,16 @@ export class FsProjectManager implements ProjectManager {
           }
           projectSpec.runtimes.push(buildDocsRuntimeSpec(input.resourceConfig));
           ensureBoxGateway(projectSpec, input.resourceConfig.name);
+          if (isBoxProject(projectSpec)) {
+            yield {
+              type: "warning",
+              message:
+                `runtime '${input.resourceConfig.name}' runs its agent without a box, under ` +
+                "`agentcore dev` and on AgentCore Runtime: `agentcore add runtime` writes no box " +
+                `profile (${boxLocalProfileFile(input.resourceConfig.name)}) and no box.version ` +
+                "for a runtime whose code you write",
+            };
+          }
           break;
         }
 
@@ -872,10 +884,19 @@ export class FsProjectManager implements ProjectManager {
         // Tracked as each file is written, so a failed write into an existing
         // folder removes only what it wrote, and a new folder goes entirely.
         const scaffoldWritten: string[] = [];
+        // In a Box project, a runtime whose template can run in a box is scaffolded as a box
+        // template, as create scaffolds one: box.version, start.py for CodeZip, and its own box
+        // profile below.
+        const boxInput = isBoxProject(projectSpec)
+          ? addedBoxRuntimeInput(input.resourceConfig.scaffoldRuntimeInput)
+          : undefined;
         const { spec, envEntries } = await this.scaffoldRuntimeResources(
           outputPath,
-          input.resourceConfig,
+          boxInput
+            ? { ...input.resourceConfig, scaffoldRuntimeInput: boxInput }
+            : input.resourceConfig,
           scaffoldWritten,
+          boxInput,
         ).catch(async (err: unknown) => {
           await this.discardStaged(folderExisted ? scaffoldWritten : [outputPath]);
           throw err;
@@ -899,8 +920,23 @@ export class FsProjectManager implements ProjectManager {
 
         yield* this.installRuntimeDependencies(
           outputPath,
-          input.resourceConfig.scaffoldRuntimeInput,
+          boxInput ?? input.resourceConfig.scaffoldRuntimeInput,
         );
+        if (boxInput) {
+          const profilePath = boxLocalProfilePath(project.rootPath, boxInput.runtimeName);
+          const agentBoxDir = dirname(dirname(profilePath));
+          const agentBoxDirExisted = existsSync(agentBoxDir);
+          const profileExisted = existsSync(profilePath);
+          yield* this.writeBoxProfile(
+            project.rootPath,
+            projectSpec.name,
+            boxInput,
+            await this.boxBuildRegion(),
+          );
+          // Removed with the runtime's folder if the spec does not commit, so a retry writes it anew.
+          if (!agentBoxDirExisted) scaffoldedPaths.push(agentBoxDir);
+          else if (!profileExisted) scaffoldedPaths.push(profilePath);
+        }
         break;
       }
       case "credential": {
@@ -1541,19 +1577,23 @@ export class FsProjectManager implements ProjectManager {
     };
   }
 
+  /**
+   * Writes the runtime's template into `outputPath`. With `boxInput`, a runtime of a Box project,
+   * the template also gets what runs its agent in a box on AgentCore Runtime.
+   */
   private async scaffoldRuntimeResources(
     outputPath: string,
     input: RuntimeResourceConfig,
     written: string[] = [],
+    boxInput?: ScaffoldRuntimeInput,
   ) {
-    const resolver = getRuntimeTemplateResolver(
-      { assetSource: this.assetSource, templateRenderer: this.templateRenderer },
-      input,
-    );
+    const config = { assetSource: this.assetSource, templateRenderer: this.templateRenderer };
+    const resolver = getRuntimeTemplateResolver(config, input);
     if (!resolver)
       throw new InputValidationError(`unable to find template that matches given parameters`);
 
     const result = await resolver.resolve(input);
+    if (boxInput) withBoxStart(config, result, boxInput);
     await result.tree.write(dirname(outputPath), { written });
     return { spec: result.spec, envEntries: result.envEntries ?? [] };
   }

@@ -35,7 +35,8 @@ export function boxUvSyncEnv(home: string): Record<string, string> {
 
 /**
  * The entry point of a runtime that runs its agent in a box on a CodeZip
- * deploy: start.py starts `box run`. Create writes it.
+ * deploy: start.py starts `box run`. Create writes it, and so does `add runtime`
+ * in a Box project.
  */
 export const BOX_CODEZIP_ENTRYPOINT = "start.py";
 
@@ -191,11 +192,24 @@ export function assertNoProjectBoxProfile(projectRoot: string): void {
 }
 
 /**
- * Whether create writes a box profile for this runtime: a box template, CodeZip or container,
- * which runs its agent in Strands Box. Every other template runs its agent the usual way.
+ * Whether create, and `add runtime` in a Box project, write a box profile for this runtime: a box
+ * template, CodeZip or container, which runs its agent in Strands Box. Every other template runs
+ * its agent the usual way.
  */
 export function hasBoxProfile(runtime: ScaffoldRuntimeInput): boolean {
   return startsInBoxOnCodeZip(runtime) || isBoxedContainer(runtime);
+}
+
+/**
+ * `runtime` as a box template, when `add runtime` adds it to a Box project and its template can
+ * run its agent in a box, such as the Python CodeZip agent of a Bedrock Agent import; otherwise
+ * `undefined`, and the runtime runs its agent the usual way.
+ */
+export function addedBoxRuntimeInput(
+  runtime: ScaffoldRuntimeInput,
+): ScaffoldRuntimeInput | undefined {
+  const boxed = { ...runtime, boxTemplate: true };
+  return hasBoxProfile(boxed) ? boxed : undefined;
 }
 
 /** The Strands box container template, whose image starts `box run` in /app. */
