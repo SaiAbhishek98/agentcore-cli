@@ -57,6 +57,7 @@ import { boxGatewayIamWarnings, type BoxNetwork } from "./boxNetwork";
 import { boxNetworkFailureMessage, readBoxNetworks } from "./boxNetworkSource";
 import { BoxCliProfileResolver, type BoxProfileResolver } from "./boxProfileResolver";
 import { BOX_NETWORK_WRITERS, boxNetworkEdits, writeBoxNetworkFiles } from "./boxNetworkWriters";
+import { withRuntimePolicies } from "./boxTelemetry";
 import { createProjectTree } from "./templates/project";
 import {
   boxProfilePath,
@@ -1595,7 +1596,12 @@ export class FsProjectManager implements ProjectManager {
       // Only the fields a writer changed are set, so every other field keeps its value and place.
       const specPath = this.getProjectSpecPath(project);
       const raw = await this.json.read(specPath, z.record(z.string(), z.unknown()));
-      const changes = edits.changedFields.map((field) => [field, edits.spec[field]]);
+      const changes = edits.changedFields.map((field) => [
+        field,
+        field === "runtimes"
+          ? withRuntimePolicies(raw.runtimes, edits.spec.runtimes)
+          : edits.spec[field],
+      ]);
       const updated = { ...raw, ...Object.fromEntries(changes) };
       const parsed = ProjectSpecSchema.safeParse(updated);
       if (!parsed.success) {
@@ -1605,7 +1611,10 @@ export class FsProjectManager implements ProjectManager {
       result = { ...project, spec: parsed.data };
     }
     for (const file of edits.files) {
-      if (!existsSync(join(project.rootPath, ...file.path.split("/")))) {
+      const exists = existsSync(join(project.rootPath, ...file.path.split("/")));
+      if ("remove" in file) {
+        if (exists) messages.push(`removing ${file.path}`);
+      } else if (!exists) {
         messages.push(`writing ${file.path}`);
       }
     }
