@@ -639,16 +639,19 @@ async function runUi(subject: ReturnType<typeof harness>, args: readonly string[
 }
 
 describe("project dev Inspector UI mode", () => {
-  test("leaves the box's agent port to the box when a CodeZip runtime runs in one", async () => {
+  test.each([
+    ["leaves the box's agent port to the box when a CodeZip runtime runs in one", "search", 8082],
+    ["takes that port when only another runtime has a box profile", "other", 8081],
+  ])("%s", async (_label, profiled, port) => {
     const root = await mkdtemp(join(tmpdir(), "agentcore-dev-box-ui-"));
     try {
-      await mkdir(join(root, ".box"));
-      await writeFile(join(root, ".box", "profile.toml"), "");
+      await mkdir(join(root, ".box", profiled, "local"), { recursive: true });
+      await writeFile(join(root, ".box", profiled, "local", "profile.toml"), "");
       const subject = harness({ project: { ...project(runtime("search")), rootPath: root } });
 
       const { pending } = await runUi(subject);
 
-      expect(subject.ui.starts).toEqual([{ port: 8082 }]);
+      expect(subject.ui.starts).toEqual([{ port }]);
 
       process.emit("SIGINT", "SIGINT");
       await pending.catch(() => undefined);

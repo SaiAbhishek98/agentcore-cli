@@ -443,26 +443,26 @@ describe("telemetryPolicyWriter", () => {
 describe("runtimeProfileWriter", () => {
   test("writes the Runtime profile and a byte copy of each policy file beside it", () => {
     const writer = runtimeProfileWriter([
-      { runtime: "agent", dist: "app/agent/.box-dist", kind: "codezip" },
+      { runtime: "agent", dist: ".box/agent/aws", kind: "codezip" },
     ]);
     const models = [network({ policyFiles: ["policy.dw", "rules/extra.dw"] })];
 
     const { files } = run([writer], models);
 
     expect(writer.writes(models, contextFor())).toEqual([
-      { kind: "file", path: "app/agent/.box-dist/profile.toml" },
-      { kind: "file", path: `app/agent/.box-dist/${AGENTCORE_PACK_PATH}` },
-      { kind: "file", path: `app/agent/.box-dist/${AGENTCORE_CODEZIP_PACK_PATH}` },
-      { kind: "file", path: "app/agent/.box-dist/policy.dw" },
-      { kind: "file", path: "app/agent/.box-dist/rules/extra.dw" },
+      { kind: "file", path: ".box/agent/aws/profile.toml" },
+      { kind: "file", path: `.box/agent/aws/${AGENTCORE_PACK_PATH}` },
+      { kind: "file", path: `.box/agent/aws/${AGENTCORE_CODEZIP_PACK_PATH}` },
+      { kind: "file", path: ".box/agent/aws/policy.dw" },
+      { kind: "file", path: ".box/agent/aws/rules/extra.dw" },
     ]);
     // The writer writes exactly the files it declares.
     expect(files.map(({ path }) => ({ kind: "file", path })) as unknown).toEqual(
       writer.writes(models, contextFor()),
     );
     expect(files.slice(3)).toEqual([
-      { path: "app/agent/.box-dist/policy.dw", copyOf: ".box/policy.dw" },
-      { path: "app/agent/.box-dist/rules/extra.dw", copyOf: ".box/rules/extra.dw" },
+      { path: ".box/agent/aws/policy.dw", copyOf: ".box/agent/local/policy.dw" },
+      { path: ".box/agent/aws/rules/extra.dw", copyOf: ".box/agent/local/rules/extra.dw" },
     ]);
     expect("text" in files[0]! && files[0].text).toContain(
       'policies = ["policy.dw", "rules/extra.dw"]',

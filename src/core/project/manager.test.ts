@@ -46,7 +46,7 @@ import {
   type AddResourceOptions,
 } from "../../handlers/project/types";
 import { createSilentLogger, TestIdentityClient } from "../../testing";
-import { BOX_PROFILE_FILE, boxProfileWarnings, renderBoxProfile } from "./templates/boxProfile";
+import { boxLocalProfileFile, boxProfileWarnings, renderBoxProfile } from "./templates/boxProfile";
 import type { DeployBackendInput, ProjectBackend } from "./backends/types";
 import { BOX_INSTALL_HINT, BOX_RELEASE } from "./backends/boxRelease";
 import { MissingToolError } from "../../io/exec";
@@ -381,7 +381,7 @@ describe("FsProjectManager.create", () => {
     // The image builds its own venv, so the host venv may use any Python. Only a box template runs
     // the agent in a box, so this template gets no box profile and makes no Box project.
     expect(setup.commands).toContainEqual({ command: ["uv", "sync"], cwd: appDir });
-    expect(await Bun.file(join(directory, "example", BOX_PROFILE_FILE)).exists()).toBe(false);
+    expect(existsSync(join(directory, "example", ".box"))).toBe(false);
     expect(await Bun.file(join(appDir, "start.sh")).exists()).toBe(false);
     expect(spec.projectType).toBeUndefined();
   });
@@ -789,22 +789,29 @@ describe("FsProjectManager.create box profile", () => {
   test.each([
     ["after installing", false],
     ["with --skip-install", true],
-  ])("writes the box profile into the project's .box folder %s", async (_label, skipInstall) => {
-    const directory = await inTempDirectory();
-    const { events } = await runCreate(manager().manager, {
-      name: "example",
-      scaffoldRuntimeInput: AGENT_PYTHON_STRANDS_BOX,
-      skipInstall,
-      skipGit: true,
-      region: "eu-west-1",
-    });
+  ])(
+    "writes the box profile into the agent's .box/<name>/local folder %s",
+    async (_label, skipInstall) => {
+      const directory = await inTempDirectory();
+      const { events } = await runCreate(manager().manager, {
+        name: "example",
+        scaffoldRuntimeInput: AGENT_PYTHON_STRANDS_BOX,
+        skipInstall,
+        skipGit: true,
+        region: "eu-west-1",
+      });
 
-    const path = join(directory, "example", BOX_PROFILE_FILE);
-    expect(await readFile(path, "utf8")).toBe(
-      renderBoxProfile("example", AGENT_PYTHON_STRANDS_BOX, "eu-west-1")!,
-    );
-    expect(events).toContainEqual({ type: "step", message: `writing box profile ${path}` });
-  });
+      const path = join(
+        directory,
+        "example",
+        boxLocalProfileFile(AGENT_PYTHON_STRANDS_BOX.runtimeName),
+      );
+      expect(await readFile(path, "utf8")).toBe(
+        renderBoxProfile("example", AGENT_PYTHON_STRANDS_BOX, "eu-west-1")!,
+      );
+      expect(events).toContainEqual({ type: "step", message: `writing box profile ${path}` });
+    },
+  );
 
   test("warns when a LiteLLM agent's box profile reads a key that nothing set", async () => {
     await inTempDirectory();
@@ -844,8 +851,12 @@ describe("FsProjectManager.create box profile", () => {
 
   test("leaves an existing box profile unchanged", async () => {
     const directory = await inTempDirectory();
-    const path = join(directory, "example", BOX_PROFILE_FILE);
-    await mkdir(join(directory, "example", ".box"), { recursive: true });
+    const path = join(
+      directory,
+      "example",
+      boxLocalProfileFile(AGENT_PYTHON_STRANDS_BOX.runtimeName),
+    );
+    await mkdir(join(path, ".."), { recursive: true });
     await writeFile(path, "# mine\n");
 
     const { events } = await runCreate(manager().manager, {
@@ -2077,10 +2088,15 @@ describe("FsProjectManager.build", () => {
       { type: "step", message: "writing agentcore/box-memory-policy.json" },
       { type: "step", message: "synthesizing CloudFormation templates" },
     ]);
-    // The zip carries box and the Runtime profile, staged before synth packages the code.
+    // The zip carries box and the Runtime profile, staged before synth packages the code: build
+    // generates them in the runtime's .box/<name>/aws/, and copies that into .box-dist/.
     const dist = join(directory, "example", "app", "agent_python_strands_box", ".box-dist");
+    const aws = join(directory, "example", ".box", "agent_python_strands_box", "aws");
     expect(existsSync(join(dist, "box"))).toBe(true);
-    expect(existsSync(join(dist, "profile.toml"))).toBe(true);
+    expect(existsSync(join(aws, "box"))).toBe(true);
+    expect(await readFile(join(dist, "profile.toml"), "utf8")).toBe(
+      await readFile(join(aws, "profile.toml"), "utf8"),
+    );
   });
 
   test("downloads box from the public box release when it is not cached", async () => {

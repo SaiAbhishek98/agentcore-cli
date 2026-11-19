@@ -32,16 +32,23 @@ async function temp(prefix: string): Promise<string> {
   return directory;
 }
 
-/** A project named `Demo` that holds its box profile in .box/profile.toml when `profiled`. */
+/** Writes the local box profile of the runtime `name`, and the venv of its app folder. */
+async function profile(projectRoot: string, name: string): Promise<void> {
+  const local = join(projectRoot, ".box", name, "local");
+  await mkdir(local, { recursive: true });
+  await writeFile(join(local, "profile.toml"), PROFILE.replace("app/agent", `app/${name}`));
+  await mkdir(join(projectRoot, "app", name, ".venv"), { recursive: true });
+}
+
+/**
+ * A project named `Demo` that holds the box profile of the runtime `agent` in
+ * .box/agent/local/profile.toml when `profiled`.
+ */
 async function scene(profiled: boolean, boxOnPath = true) {
   const projectRoot = await temp("agentcore-box-project-");
   await mkdir(join(projectRoot, "agentcore"));
   await writeFile(join(projectRoot, "agentcore", "agentcore.json"), '{"name":"Demo"}');
-  if (profiled) {
-    await mkdir(join(projectRoot, ".box"));
-    await writeFile(join(projectRoot, ".box", "profile.toml"), PROFILE);
-    await mkdir(join(projectRoot, "app", "agent", ".venv"), { recursive: true });
-  }
+  if (profiled) await profile(projectRoot, "agent");
 
   const calls: { command: string[]; options: StreamProcessOptions }[] = [];
   const streamProcess: ProcessStreamer = async function* (command, options) {
@@ -93,6 +100,14 @@ function input(
   };
 }
 
+/** `agent`'s dev input for the runtime `second`, in app/second. */
+function secondOf(agent: DevServerInput): DevServerInput {
+  return {
+    ...agent,
+    runtime: { ...agent.runtime, name: "second", codeLocation: "app/second" } as ProjectRuntime,
+  };
+}
+
 async function collect(events: AsyncIterable<DevEvent>): Promise<DevEvent[]> {
   const collected: DevEvent[] = [];
   for await (const event of events) collected.push(event);
@@ -121,21 +136,38 @@ describe("BoxDevRunner", () => {
     expect(fallbackRuns).toHaveLength(1);
   });
 
-  test("runs the project's box profile from the project folder", async () => {
+  test("runs the runtime's own box profile from the project folder", async () => {
     const { projectRoot, calls, fallbackRuns, runner } = await scene(true);
 
     const events = await collect(runner.run(input(projectRoot)));
 
     expect(calls.map(({ command }) => command)).toEqual([
-      ["box", "run", ".box/profile.toml", "--no-banner"],
+      ["box", "run", ".box/agent/local/profile.toml", "--no-banner"],
     ]);
     expect(calls[0]!.options.cwd).toBe(projectRoot);
     expect(fallbackRuns).toEqual([]);
     expect(events).toEqual([
       TRACES_NOTICE,
-      { type: "status", message: "Starting the agent in a box (box run .box/profile.toml)" },
+      {
+        type: "status",
+        message: "Starting the agent in a box (box run .box/agent/local/profile.toml)",
+      },
       { type: "stdout", line: "Uvicorn running" },
     ]);
+  });
+
+  test("runs each runtime with the box profile of that runtime", async () => {
+    const { projectRoot, calls, fallbackRuns, runner } = await scene(true);
+    await profile(projectRoot, "second");
+
+    await collect(runner.run(secondOf(input(projectRoot))));
+    await collect(runner.run(input(projectRoot)));
+
+    expect(calls.map(({ command }) => command[2])).toEqual([
+      ".box/second/local/profile.toml",
+      ".box/agent/local/profile.toml",
+    ]);
+    expect(fallbackRuns).toEqual([]);
   });
 
   test("hands box run the .env.local values, so it can attach the API key, and not dev's OTEL ones", async () => {
@@ -255,16 +287,28 @@ describe("BoxDevRunner", () => {
     expect(events).not.toContainEqual(TRACES_NOTICE);
   });
 
-  test("runs another runtime the usual way, since the profile is the first runtime's", async () => {
+  test("runs a runtime with no box.version the usual way, though another runtime has a box profile", async () => {
     const { projectRoot, calls, fallbackRuns, runner } = await scene(true);
-    const second = input(projectRoot);
+    const second = secondOf(input(projectRoot));
     // The second runtime was added without a box template, so it has no box.version.
     const { box: _box, ...plain } = second.runtime;
-    second.runtime = { ...plain, name: "second", codeLocation: "app/second" } as ProjectRuntime;
+    second.runtime = plain as ProjectRuntime;
 
     const events = await collect(runner.run(second));
 
     expect(calls).toEqual([]);
+    expect(fallbackRuns).toHaveLength(1);
+    // The profile of `agent` is not the profile of `second`, so dev says nothing about it.
+    expect(events).toEqual([{ type: "stdout", line: "fallback" }]);
+  });
+
+  test("says why it runs a runtime with its own box profile but no box.version the usual way", async () => {
+    const { projectRoot, fallbackRuns, runner } = await scene(false);
+    await profile(projectRoot, "second");
+    const second = secondOf(input(projectRoot, 8080, undefined, "main.py", true, /* box */ false));
+
+    const events = await collect(runner.run(second));
+
     expect(fallbackRuns).toHaveLength(1);
     expect(events).toEqual([
       {
@@ -273,6 +317,53 @@ describe("BoxDevRunner", () => {
       },
       { type: "stdout", line: "fallback" },
     ]);
+  });
+
+  test("refuses a box runtime that has no box profile of its own, though another runtime has one", async () => {
+    const { projectRoot, calls, fallbackRuns, runner } = await scene(true);
+
+    const run = collect(runner.run(secondOf(input(projectRoot))));
+
+    await expect(run).rejects.toBeInstanceOf(ResourceNotFoundError);
+    await expect(run).rejects.toThrow(
+      `but ${join(projectRoot, ".box", "second", "local", "profile.toml")} does not exist.`,
+    );
+    expect(calls).toEqual([]);
+    expect(fallbackRuns).toEqual([]);
+  });
+
+  test.each([
+    ["has no box profile of its own", false],
+    ["has its own box profile too", true],
+  ])(
+    "refuses a box runtime in a project that keeps .box/profile.toml, when it %s",
+    async (_label, profiled) => {
+      const { projectRoot, calls, fallbackRuns, runner } = await scene(profiled);
+      await mkdir(join(projectRoot, ".box"), { recursive: true });
+      await writeFile(join(projectRoot, ".box", "profile.toml"), PROFILE);
+
+      const run = collect(runner.run(input(projectRoot, 8080, "HTTP", "start.py")));
+
+      await expect(run).rejects.toBeInstanceOf(ProjectStateError);
+      await expect(run).rejects.toThrow(
+        ".box/profile.toml is the box profile of an earlier layout, and no command reads it " +
+          "now: each agent has its own profile, .box/<runtime>/local/profile.toml.",
+      );
+      expect(calls).toEqual([]);
+      expect(fallbackRuns).toEqual([]);
+    },
+  );
+
+  test("runs a runtime with no box.version the usual way in a project that keeps .box/profile.toml", async () => {
+    const { projectRoot, fallbackRuns, runner } = await scene(false);
+    await mkdir(join(projectRoot, ".box"));
+    await writeFile(join(projectRoot, ".box", "profile.toml"), PROFILE);
+
+    await collect(
+      runner.run(input(projectRoot, 8080, undefined, "main.py", true, /* box */ false)),
+    );
+
+    expect(fallbackRuns).toHaveLength(1);
   });
 
   test("tells the user to run uv sync when the runtime has no .venv", async () => {
