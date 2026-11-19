@@ -116,14 +116,18 @@ describe("addBoxMemoryTarget", () => {
 });
 
 describe("boxMemoryPolicy", () => {
-  test("allows the Memory data plane on the default Memory in any target", () => {
+  test("allows the Memory data plane on the default Memory in any target, in the region of the agentcore target and the gateway role's account", () => {
     const policy = boxMemoryPolicy(spec(), ROOT) as {
-      Statement: Array<{ Action: string[]; Resource: string[] }>;
+      Statement: Array<{ Action: string[]; Resource: string[]; Condition: unknown }>;
     };
 
     expect(policy.Statement[0]!.Resource).toEqual([
-      "arn:aws:bedrock-agentcore:*:*:memory/demo_*agentMemory-*",
+      "arn:aws:bedrock-agentcore:us-west-2:*:memory/demo_*agentMemory-*",
     ]);
+    expect(policy.Statement[0]!.Condition).toEqual({
+      StringEquals: { "aws:ResourceAccount": "${aws:PrincipalAccount}" },
+    });
+    expect(getBoxGatewayAgentCoreTargetSpec().outboundAuth).toMatchObject({ region: "us-west-2" });
     expect(policy.Statement[0]!.Action).toContain("bedrock-agentcore:ListEvents");
     expect(policy.Statement[0]!.Action).toContain("bedrock-agentcore:CreateEvent");
   });

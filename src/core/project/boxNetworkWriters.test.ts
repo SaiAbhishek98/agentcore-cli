@@ -273,6 +273,29 @@ describe("defaultTargetsWriter", () => {
     expect(edits.files.map(({ path }) => path)).toEqual([BOX_MEMORY_POLICY_FILE]);
   });
 
+  test("writes the Memory policy for the region of the agentcore target, in the role's account", () => {
+    const project = spec();
+    project.memories.push({
+      name: "agentMemory",
+      eventExpiryDuration: 30,
+      strategies: [],
+    } as never);
+
+    const edits = run([defaultTargetsWriter], [network()], project);
+
+    const agentcore = edits.spec.agentCoreGateways[0]!.targets.find(
+      ({ name }) => name === "agentcore",
+    );
+    expect(agentcore?.outboundAuth?.region).toBe("us-west-2");
+    const memory = edits.files.find(({ path }) => path === BOX_MEMORY_POLICY_FILE);
+    expect(JSON.parse((memory as { text: string }).text).Statement).toEqual([
+      expect.objectContaining({
+        Resource: ["arn:aws:bedrock-agentcore:us-west-2:*:memory/demo_*agentMemory-*"],
+        Condition: { StringEquals: { "aws:ResourceAccount": "${aws:PrincipalAccount}" } },
+      }),
+    ]);
+  });
+
   test("adds no Memory target for an endpoint a target serves already", () => {
     const project = spec([{ ...getBoxGatewayAgentCoreTargetSpec(), name: "mem" }]);
     project.memories.push({

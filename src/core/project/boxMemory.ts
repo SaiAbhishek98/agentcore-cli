@@ -1,6 +1,7 @@
 import { InputValidationError } from "../../errors/errors";
 import {
   BOX_GATEWAY_AGENTCORE_TARGET_NAME,
+  DEFAULT_EGRESS_BEDROCK_REGION,
   getBoxGatewayAgentCoreTargetSpec,
 } from "../../handlers/project/shortcuts";
 import type { AgentCoreGatewayTarget } from "../../projectSchemas/gateway";
@@ -53,7 +54,9 @@ function boxedRuntimesWithMemory(spec: ProjectSpec, projectRoot: string): Projec
  * The IAM policy document for {@link BOX_MEMORY_POLICY_FILE}, or undefined when
  * no boxed runtime has its default Memory. The Memory ARN is known only after
  * deploy, so each resource matches the physical name the L3 gives the Memory,
- * `<project>_<target>_<memory>-<suffix>`, in any target.
+ * `<project>_<target>_<memory>-<suffix>`, in any target, in the region of the
+ * `agentcore` target. One file serves every deploy target, so the ARN names no
+ * account, and the condition holds the Memory to the gateway role's own account.
  */
 export function boxMemoryPolicy(
   spec: ProjectSpec,
@@ -71,8 +74,10 @@ export function boxMemoryPolicy(
         Effect: "Allow",
         Action: MEMORY_DATA_PLANE_ACTIONS,
         Resource: memories.map(
-          (memory) => `arn:aws:bedrock-agentcore:*:*:memory/${spec.name}_*${memory}-*`,
+          (memory) =>
+            `arn:aws:bedrock-agentcore:${DEFAULT_EGRESS_BEDROCK_REGION}:*:memory/${spec.name}_*${memory}-*`,
         ),
+        Condition: { StringEquals: { "aws:ResourceAccount": "${aws:PrincipalAccount}" } },
       },
     ],
   };
