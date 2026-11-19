@@ -53,29 +53,31 @@ async function linuxBuild(options: { ffi?: boolean } = {}): Promise<BoxLinuxBuil
   };
 }
 
-async function project(entrypoint: string, runtimeVersion = "PYTHON_3_14"): Promise<Project> {
+async function project(
+  entrypoint: string,
+  runtimeVersion = "PYTHON_3_14",
+  names = ["agent"],
+): Promise<Project> {
   const rootPath = await temp("box-project-");
-  await mkdir(join(rootPath, "app", "agent"), { recursive: true });
+  for (const name of names) await mkdir(join(rootPath, "app", name), { recursive: true });
   return {
     name: "demo",
     rootPath,
     spec: {
       name: "demo",
-      runtimes: [
-        {
-          name: "agent",
-          build: "CodeZip",
-          entrypoint,
-          codeLocation: "app/agent",
-          runtimeVersion,
-          modelProvider: "Bedrock",
-          // create writes box.version only for a box template, whose entry point is start.py.
-          ...(entrypoint === "start.py" && { box: { version: "1.0.0" } }),
-        },
-      ],
+      runtimes: names.map((name) => ({
+        name,
+        build: "CodeZip",
+        entrypoint,
+        codeLocation: `app/${name}`,
+        runtimeVersion,
+        modelProvider: "Bedrock",
+        // create writes box.version only for a box template, whose entry point is start.py.
+        ...(entrypoint === "start.py" && { box: { version: "1.0.0" } }),
+      })),
       memories: [],
       projectType: "box",
-      agentCoreGateways: [boxGatewaySpec("agent")],
+      agentCoreGateways: names.map((name) => boxGatewaySpec(name)),
     },
   } as unknown as Project;
 }
@@ -111,6 +113,19 @@ describe("stageBoxCodeZip", () => {
     expect(await readFile(join(dist, AGENTCORE_CODEZIP_PACK_PATH), "utf8")).toBe(
       renderAgentCoreCodeZipPack(),
     );
+    // The code folder's .box-dist/ is a copy of the runtime's .box/agent/aws/.
+    const aws = join(demo.rootPath, ".box", "agent", "aws");
+    for (const file of [
+      "box",
+      "profile.toml",
+      "ffi/libffi.so.8",
+      AGENTCORE_PACK_PATH,
+      AGENTCORE_CODEZIP_PACK_PATH,
+    ]) {
+      expect(await readFile(join(aws, file), "utf8")).toBe(
+        await readFile(join(dist, file), "utf8"),
+      );
+    }
   });
 
   test("asks for the box of the runtime's box.version", async () => {
@@ -187,10 +202,11 @@ describe("stageBoxCodeZip", () => {
   test("copies each policy file of the model, byte for byte, beside the profile that names it", async () => {
     const build = await linuxBuild();
     const demo = await project("start.py");
-    await mkdir(join(demo.rootPath, ".box", "rules"), { recursive: true });
+    const local = join(demo.rootPath, ".box", "agent", "local");
+    await mkdir(join(local, "rules"), { recursive: true });
     const bytes = Buffer.from([0x2f, 0x2f, 0x20, 0xe2, 0x9c, 0x93, 0x0d, 0x0a]);
-    await writeFile(join(demo.rootPath, ".box", "policy.dw"), bytes);
-    await writeFile(join(demo.rootPath, ".box", "rules", "extra.dw"), "// extra\n");
+    await writeFile(join(local, "policy.dw"), bytes);
+    await writeFile(join(local, "rules", "extra.dw"), "// extra\n");
 
     await stageBoxCodeZip(demo, [model(["policy.dw", "rules/extra.dw"])], async () => build);
 
@@ -200,6 +216,36 @@ describe("stageBoxCodeZip", () => {
     expect(await readFile(join(dist, "profile.toml"), "utf8")).toContain(
       'policies = ["policy.dw", "rules/extra.dw"]',
     );
+  });
+
+  test("stages each runtime's own Runtime profile and policy files into its own code folder", async () => {
+    const build = await linuxBuild();
+    const demo = await project("start.py", "PYTHON_3_14", ["agent", "second"]);
+    for (const [name, file] of [
+      ["agent", "policy.dw"],
+      ["second", "rules.dw"],
+    ] as const) {
+      await mkdir(join(demo.rootPath, ".box", name, "local"), { recursive: true });
+      await writeFile(join(demo.rootPath, ".box", name, "local", file), `// ${name}\n`);
+    }
+    const networks = [model(["policy.dw"]), model(["rules.dw"], "second")];
+
+    expect(await stageBoxCodeZip(demo, networks, async () => build)).toEqual(["agent", "second"]);
+
+    for (const [name, file, other] of [
+      ["agent", "policy.dw", "rules.dw"],
+      ["second", "rules.dw", "policy.dw"],
+    ] as const) {
+      const dist = join(demo.rootPath, "app", name, ".box-dist");
+      expect(await readFile(join(dist, file), "utf8")).toBe(`// ${name}\n`);
+      expect(await Bun.file(join(dist, other)).exists()).toBe(false);
+      const profile = await readFile(join(dist, "profile.toml"), "utf8");
+      expect(profile).toContain(`policies = ["${file}"]`);
+      expect(profile).toContain(`# The policy files of .box/${name}/local/profile.toml,`);
+      expect(await readFile(join(demo.rootPath, ".box", name, "aws", "profile.toml"), "utf8")).toBe(
+        profile,
+      );
+    }
   });
 
   test("stages no policy file and names none when the model has none", async () => {
@@ -213,11 +259,11 @@ describe("stageBoxCodeZip", () => {
   });
 });
 
-/** A model of runtime `agent` with no host and the policy files given. */
-function model(policyFiles: string[]): BoxNetwork {
+/** A model of the runtime `runtime` with no host and the policy files given. */
+function model(policyFiles: string[], runtime = "agent"): BoxNetwork {
   return {
-    runtime: "agent",
-    gateway: "agent-box-egress",
+    runtime,
+    gateway: `${runtime}-box-egress`,
     region: "us-west-2",
     hosts: [],
     envRoutes: [],

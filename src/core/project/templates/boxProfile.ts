@@ -1,5 +1,6 @@
-import { join } from "node:path";
-import { InputValidationError } from "../../../errors/errors";
+import { existsSync } from "node:fs";
+import { join, posix } from "node:path";
+import { InputValidationError, ProjectStateError } from "../../../errors/errors";
 import {
   DEFAULT_EGRESS_BEDROCK_REGION,
   callsBedrockModel,
@@ -115,16 +116,66 @@ export function boxWorkloadPort(protocol: Protocol | undefined): number {
   return boxIngressPort(protocol) + 1;
 }
 
-/**
- * The project's box profile, relative to the project root: `box run
- * .box/profile.toml` there runs it. box keeps the agent out of the project's
- * `.box` folder, so the agent cannot change its own profile.
- */
-export const BOX_PROFILE_FILE = ".box/profile.toml";
+/** The box folder at the project root that holds every agent's profiles. */
+const BOX_ROOT = ".box";
 
-/** The box profile of the project at `projectRoot`. */
-export function boxProfilePath(projectRoot: string): string {
-  return join(projectRoot, BOX_PROFILE_FILE);
+/** An agent's box folder, relative to the project root: `.box/<agentName>`. */
+function boxAgentDir(agentName: string): string {
+  return posix.join(BOX_ROOT, agentName);
+}
+
+/**
+ * An agent's local profile folder, relative to the project root:
+ * `.box/<agentName>/local`. It holds the profile `agentcore dev` runs and the
+ * policy files it names. box keeps the agent out of this folder, so the agent
+ * cannot change its own profile.
+ */
+export function boxLocalDir(agentName: string): string {
+  return posix.join(boxAgentDir(agentName), "local");
+}
+
+/**
+ * An agent's AWS folder, relative to the project root: `.box/<agentName>/aws`.
+ * Build and deploy generate the AgentCore Runtime profile and its resources
+ * here, then copy the folder into the deploy artifact's `.box-dist/` staging.
+ */
+export function boxAwsDir(agentName: string): string {
+  return posix.join(boxAgentDir(agentName), "aws");
+}
+
+/**
+ * An agent's local box profile, relative to the project root: `box run
+ * .box/<agentName>/local/profile.toml` there runs it.
+ */
+export function boxLocalProfileFile(agentName: string): string {
+  return posix.join(boxLocalDir(agentName), "profile.toml");
+}
+
+/** The `[profile] name` of an agent's local box profile: the project's name, then the agent's. */
+export function boxLocalProfileName(projectName: string, agentName: string): string {
+  return `${projectName}-${agentName}`;
+}
+
+/** An agent's local box profile at `projectRoot`. */
+export function boxLocalProfilePath(projectRoot: string, agentName: string): string {
+  return join(projectRoot, ...boxLocalProfileFile(agentName).split("/"));
+}
+
+/** The one box profile of a project in the layout before each agent had its own. */
+const PROJECT_BOX_PROFILE_FILE = posix.join(BOX_ROOT, "profile.toml");
+
+/**
+ * Throws when the project at `projectRoot` keeps `.box/profile.toml`, the one box profile of the
+ * earlier layout, which no command reads now.
+ */
+export function assertNoProjectBoxProfile(projectRoot: string): void {
+  if (!existsSync(join(projectRoot, ...PROJECT_BOX_PROFILE_FILE.split("/")))) return;
+  throw new ProjectStateError(
+    `${PROJECT_BOX_PROFILE_FILE} is the box profile of an earlier layout, and no command reads ` +
+      `it now: each agent has its own profile, ${boxLocalProfileFile("<runtime>")}. Move the ` +
+      "profile and its policy files into that folder of the runtime it runs, then remove " +
+      `${PROJECT_BOX_PROFILE_FILE}.`,
+  );
 }
 
 /**
@@ -133,20 +184,6 @@ export function boxProfilePath(projectRoot: string): string {
  */
 export function hasBoxProfile(runtime: ScaffoldRuntimeInput): boolean {
   return startsInBoxOnCodeZip(runtime) || isBoxedContainer(runtime);
-}
-
-/**
- * Whether the project's box profile, `profileText`, was written for `runtime`. Create writes one
- * profile, for the first runtime, and `add` writes none, so a runtime added later has no profile.
- * A CodeZip profile names its runtime's folder; the container profile runs /app and names none.
- */
-export function boxProfileIsFor(
-  profileText: string,
-  runtime: { build: string; codeLocation: string },
-): boolean {
-  const codeZip = profileText.includes("${{ workspace }}/app/");
-  if (runtime.build === "Container") return !codeZip;
-  return profileText.includes(`/${runtime.codeLocation}"`);
 }
 
 /** The Strands box container template, whose image starts `box run` in /app. */
@@ -461,6 +498,10 @@ export function renderBoxProfile(
     ...PYTHON_ENV,
     ...(onRuntime && runtimeRegionEnv(bedrock)),
   };
+  // box keeps one profile of each name on a machine, so each runtime's local profile has its own.
+  const profileName = onRuntime
+    ? projectName
+    : boxLocalProfileName(projectName, runtime.runtimeName);
 
   // The optional sections, each empty or ending in a newline.
   const header = codeZipOnRuntime
@@ -469,7 +510,7 @@ export function renderBoxProfile(
       ? "# Rendered by agentcore build and deploy from agentcore.json, for AgentCore Runtime. The box/agentcore pack carries the deployed resources' variables."
       : container
         ? "# Written by `agentcore create` for the agent's image, to run with `box run` in /app."
-        : `# Written by \`agentcore create\`. Run \`box run ${BOX_PROFILE_FILE}\` in the project folder.`;
+        : `# Written by \`agentcore create\`. Run \`box run ${boxLocalProfileFile(runtime.runtimeName)}\` in the project folder.`;
   const regionComment = onRuntime
     ? ""
     : "# The AWS region `agentcore create` resolved. Change it to call Bedrock in another region\n" +
@@ -484,7 +525,7 @@ export function renderBoxProfile(
   const routes = onRuntime ? runtimeRoutes : "";
   const policies =
     onRuntime && runtimePolicies.length > 0
-      ? `# The policy files of ${BOX_PROFILE_FILE}, copied unchanged beside this profile.\npolicies = ${list([...runtimePolicies])}\n`
+      ? `# The policy files of ${boxLocalProfileFile(runtime.runtimeName)}, copied unchanged beside this profile.\npolicies = ${list([...runtimePolicies])}\n`
       : "";
   const bedrockRoute = !bedrock
     ? ""
@@ -518,7 +559,7 @@ ${header}
 packs = ${packs}
 ${policies}
 [profile]
-name = ${str(projectName)}
+name = ${str(profileName)}
 
 ${options}[agent]
 command = ${list(runner.command)}
@@ -667,11 +708,11 @@ function runtimeMcpServers(hosts: BoxNetwork["hosts"]): Map<string, RuntimeMcpSe
 }
 
 /**
- * A CloudWatch target of the box profile on the Runtime: its `[telemetry.<name>]`
- * table with the same keys, signed with the execution role, whatever the box
- * profile signs it with. Starts with a blank line.
+ * A CloudWatch target of the box profile `profileFile` on the Runtime: its
+ * `[telemetry.<name>]` table with the same keys, signed with the execution
+ * role, whatever the box profile signs it with. Starts with a blank line.
  */
-function runtimeTelemetrySection(target: CloudWatchTelemetry): string {
+function runtimeTelemetrySection(target: CloudWatchTelemetry, profileFile: string): string {
   const logs =
     target.kind === "cloudwatch_logs"
       ? `log_group = ${str(target.logGroup)}\nlog_stream = ${str(target.logStream)}\n`
@@ -679,7 +720,7 @@ function runtimeTelemetrySection(target: CloudWatchTelemetry): string {
   const include = target.include ? `include = ${list([...target.include])}\n` : "";
   const key = tomlKey(target.name);
   return `
-# The [telemetry.${key}] target of ${BOX_PROFILE_FILE}, signed with the execution role.
+# The [telemetry.${key}] target of ${profileFile}, signed with the execution role.
 [telemetry.${key}]
 kind = ${str(target.kind)}
 region = ${str(target.region)}
@@ -724,7 +765,13 @@ export function renderRuntimeBoxProfile(
     runtimeGatewayRoutes(spec, runtime, region, runtimeMcpServers(network?.hosts ?? [])),
     network?.policyFiles,
   )!;
-  return profile + (network?.telemetry ?? []).map(runtimeTelemetrySection).join("");
+  const profileFile = boxLocalProfileFile(runtime.name);
+  return (
+    profile +
+    (network?.telemetry ?? [])
+      .map((target) => runtimeTelemetrySection(target, profileFile))
+      .join("")
+  );
 }
 
 /**
@@ -762,7 +809,7 @@ export function boxProfileWarnings(runtime: ScaffoldRuntimeInput): string[] {
       model === undefined ? " (or use an openai/, anthropic/ or gemini/ model ID)" : "";
     return [
       `the box profile has no route for the LiteLLM model '${modelId}': add an ` +
-        `${section} section with its provider's host to ${BOX_PROFILE_FILE}${prefixHint}, or the ` +
+        `${section} section with its provider's host to ${boxLocalProfileFile(runtime.runtimeName)}${prefixHint}, or the ` +
         "box blocks the agent's model calls",
     ];
   }

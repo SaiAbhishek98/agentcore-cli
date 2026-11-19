@@ -36,6 +36,7 @@ import {
 import {
   AGENTCORE_CODEZIP_PACK_PATH,
   AGENTCORE_PACK_PATH,
+  boxLocalDir,
   renderAgentCoreCodeZipPack,
   renderAgentCorePack,
   renderRuntimeBoxProfile,
@@ -351,7 +352,7 @@ export interface StagedRuntime {
 
 /**
  * The AgentCore Runtime box profile of each staged runtime, and a byte copy of each policy file
- * its profile names, beside it at the same path.
+ * that the runtime's own local box profile names, beside it at the same path.
  */
 export function runtimeProfileWriter(staged: readonly StagedRuntime[]): BoxNetworkWriter {
   const networkOf = (networks: readonly BoxNetwork[], runtime: string) =>
@@ -389,7 +390,7 @@ export function runtimeProfileWriter(staged: readonly StagedRuntime[]): BoxNetwo
             : []),
           ...(network?.policyFiles ?? []).map((file) => ({
             path: `${dist}/${file}`,
-            copyOf: `.box/${file}`,
+            copyOf: `${boxLocalDir(runtime)}/${file}`,
           })),
         ];
       }),
