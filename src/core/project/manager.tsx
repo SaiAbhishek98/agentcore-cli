@@ -1573,13 +1573,20 @@ export class FsProjectManager implements ProjectManager {
    * from it, before synth reads agentcore.json and staging renders each Runtime profile's routes
    * from its Box gateway's targets: agentcore.json once, patched in the raw file so unknown fields
    * and key order survive and checked against the schema first, then the files, then
-   * `.env.local`. A failure of any model stops `command` before anything is written.
+   * `.env.local`. A CloudWatch target with no region gets `deployRegion`, the region of the
+   * deploy target. A failure of any model stops `command` before anything is written.
    */
   private async applyBoxNetwork(
     project: Project,
     command: "build" | "deploy",
+    deployRegion?: string,
   ): Promise<{ project: Project; networks: BoxNetwork[]; events: ProjectEvent[] }> {
-    const networks = await readBoxNetworks(project.spec, project.rootPath, this.boxProfileResolver);
+    const networks = await readBoxNetworks(
+      project.spec,
+      project.rootPath,
+      this.boxProfileResolver,
+      deployRegion,
+    );
     if (networks.some(({ failures }) => failures.length > 0)) {
       throw new InputValidationError(boxNetworkFailureMessage(networks, command));
     }
@@ -1732,7 +1739,7 @@ export class FsProjectManager implements ProjectManager {
     // first; only once the target is known, so a bad --target rewrites nothing.
     const synced = await this.syncRuntimeBuilds(project, { purpose: "deploy" });
     for (const message of synced.messages) yield { type: "step", message };
-    const boxed = await this.applyBoxNetwork(synced.project, "deploy");
+    const boxed = await this.applyBoxNetwork(synced.project, "deploy", target.region);
     yield* boxed.events;
     project = boxed.project;
 

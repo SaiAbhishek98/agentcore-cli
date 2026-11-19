@@ -4,7 +4,10 @@
  * the policy files to stage, and every warning and failure. Build, deploy, and staging write from
  * it.
  */
-import { BOX_GATEWAY_AGENTCORE_HOST } from "../../../handlers/project/shortcuts";
+import {
+  BOX_GATEWAY_AGENTCORE_HOST,
+  DEFAULT_EGRESS_BEDROCK_REGION,
+} from "../../../handlers/project/shortcuts";
 import type { AgentCoreGateway, AgentCoreGatewayTarget } from "../../../projectSchemas/gateway";
 import type { ProjectSpec } from "../../../projectSchemas/project";
 import type { ProjectRuntime } from "../../../projectSchemas/runtime";
@@ -23,7 +26,7 @@ import {
 } from "./egress";
 import { describeEntry, describeRule, ruleOrigin } from "./places";
 import { placeOf, type ParsedPolicy } from "./policyParser";
-import type { CloudWatchTelemetry } from "./telemetry";
+import { withDeployRegion, type CloudWatchTelemetry } from "./telemetry";
 import { outboundAuthWords, sameOutboundAuth, targetOutboundAuth } from "./projectSpec";
 import {
   MAX_GATEWAY_TARGETS,
@@ -133,6 +136,11 @@ export interface BoxNetworkProject {
   readonly runtime: ProjectRuntime;
   /** The runtime's Box gateway, as agentcore.json names it. */
   readonly gateway: string;
+  /**
+   * The region of the deploy target, which build sets on each CloudWatch target that names no
+   * region; absent means `DEFAULT_EGRESS_BEDROCK_REGION`, the region of the Memory target.
+   */
+  readonly deployRegion?: string;
   /** The gateway's targets, with the `agentcore` target that build adds for the Memory calls. */
   readonly targets: readonly AgentCoreGatewayTarget[];
   /** The IAM actions that the gateway's `additionalPolicies` files grant, except build's own. */
@@ -180,13 +188,20 @@ export function buildBoxNetwork(
   );
   const targets = hostTargets(routed, project, located, parsed.profile.path);
   failures.push(...targets.failures);
+  const telemetry =
+    parsed.profile.telemetry &&
+    withDeployRegion(
+      parsed.profile.telemetry,
+      project.deployRegion ?? DEFAULT_EGRESS_BEDROCK_REGION,
+      parsed.profile.path,
+    );
   return {
     runtime: project.runtime.name,
     gateway: project.gateway,
     hosts: targets.hosts,
     envRoutes: envRoutesOf(targets.hosts),
     policyFiles: parsed.profile.policyFiles,
-    ...(parsed.profile.telemetry && { telemetry: parsed.profile.telemetry }),
+    ...(telemetry && { telemetry: telemetry.telemetry }),
     grantedActions: project.grantedActions,
     warnings: [
       ...hostWarnings(targets.hosts),
@@ -197,6 +212,7 @@ export function buildBoxNetwork(
           "target for a WebSocket, so it skips this rule."
         );
       }),
+      ...(telemetry?.warnings ?? []),
     ],
     failures,
   };

@@ -35,13 +35,14 @@ const NO_POLICY: ParsedPolicy = {
 
 /**
  * The Box network model of each runtime of `spec` that runs its agent in a box, from the box
- * profile as `resolver` resolves it. A project with no box runtime, or no box profile, resolves
- * nothing.
+ * profile as `resolver` resolves it. A CloudWatch target with no region gets `deployRegion`, the
+ * region of the deploy target. A project with no box runtime, or no box profile, resolves nothing.
  */
 export async function readBoxNetworks(
   spec: ProjectSpec,
   projectRoot: string,
   resolver: BoxProfileResolver,
+  deployRegion?: string,
 ): Promise<BoxNetwork[]> {
   const runtimes = isBoxProject(spec)
     ? spec.runtimes.filter((runtime) => runsAgentInBox(projectRoot, runtime))
@@ -61,6 +62,7 @@ export async function readBoxNetworks(
       spec,
       runtime,
       gateway: entry.name,
+      ...(deployRegion && { deployRegion }),
       targets: entry.targets,
       grantedActions: granted.actions,
     });
