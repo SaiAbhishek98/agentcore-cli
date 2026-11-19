@@ -882,7 +882,7 @@ describe("warnings", () => {
     ]);
   });
 
-  test("names each target the gateway signs for a service that no policy of its role grants", () => {
+  test("names each target the gateway signs for an endpoint that no policy of its role allows", () => {
     const egress = {
       control: {
         destinations: ["bedrock.us-west-2.amazonaws.com"],
@@ -905,15 +905,115 @@ describe("warnings", () => {
         "bedrock-agentcore permissions. Add an IAM policy file to additionalPolicies of the " +
         "'agent-box-egress' gateway.",
     ]);
+    // The model calls' grant allows the runtime host, not the control plane.
     const granted = model("", egress, {
       targets: [control],
       grantedActions: ["bedrock:InvokeModel"],
     });
-    expect(boxGatewayIamWarnings(granted.spec, granted.network)).toEqual([]);
+    expect(boxGatewayIamWarnings(granted.spec, granted.network)).toEqual([
+      "Target 'egress-control' calls bedrock.us-west-2.amazonaws.com with the gateway's role, " +
+        "which has no bedrock permissions for that host. Add an IAM policy file to " +
+        "additionalPolicies of the 'agent-box-egress' gateway.",
+    ]);
     const imported = model("", egress, {
       targets: [control],
       executionRoleArn: "arn:aws:iam::123456789012:role/mine",
     });
     expect(boxGatewayIamWarnings(imported.spec, imported.network)).toEqual([]);
+  });
+
+  describe("the grant each endpoint of a target needs", () => {
+    const MEMORY_FILE = "agentcore/box-memory-policy.json";
+    const signed = (name: string, host: string, service: string) =>
+      passthrough(name, `https://${host}`, {
+        outboundAuth: { type: "GATEWAY_IAM_ROLE", service, region: "us-west-2" },
+      });
+    const RUNTIME_HOST = "bedrock-runtime.us-west-2.amazonaws.com";
+    const CONTROL_HOST = "bedrock.us-west-2.amazonaws.com";
+    const AGENTCORE_CONTROL_HOST = "bedrock-agentcore-control.us-west-2.amazonaws.com";
+    const OTHER_MEMORY_HOST = "bedrock-agentcore.us-east-1.amazonaws.com";
+    const URL_HOST = "abc123.lambda-url.us-west-2.on.aws";
+    const runtime = signed("egress-bedrock-runtime", RUNTIME_HOST, "bedrock");
+    const control = signed("egress-bedrock-control", CONTROL_HOST, "bedrock");
+    const agentcoreControl = signed(
+      "egress-agentcore-control",
+      AGENTCORE_CONTROL_HOST,
+      "bedrock-agentcore",
+    );
+    const otherMemory = signed("egress-memory-east", OTHER_MEMORY_HOST, "bedrock-agentcore");
+    const functionUrl = signed("egress-fn", URL_HOST, "lambda");
+    /** The warnings for `target` when the listed files hold `granted`, and `listed` is listed. */
+    const warningsFor = (
+      target: AgentCoreGatewayTarget,
+      granted: string[] = [],
+      listed: string[] = [],
+    ) => {
+      const r = model("", {}, { targets: [target], grantedActions: granted });
+      r.spec.agentCoreGateways[0]!.additionalPolicies = listed;
+      return boxGatewayIamWarnings(r.spec, r.network);
+    };
+    const forHost = (target: string, host: string, service: string) =>
+      `Target '${target}' calls ${host} with the gateway's role, which has no ${service} ` +
+      "permissions for that host. Add an IAM policy file to additionalPolicies of the " +
+      "'agent-box-egress' gateway.";
+    const forService = (target: string, service: string) =>
+      `Target '${target}' calls ${service} with the gateway's role, which has no ${service} ` +
+      "permissions. Add an IAM policy file to additionalPolicies of the 'agent-box-egress' gateway.";
+
+    test("a Bedrock control-plane target needs a Bedrock action other than the model calls", () => {
+      const warned = [forHost("egress-bedrock-control", CONTROL_HOST, "bedrock")];
+      expect(
+        warningsFor(control, [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:CountTokens",
+          "bedrock:InvokeModel*",
+          "lambda:*",
+        ]),
+      ).toEqual(warned);
+      for (const granted of [
+        "bedrock:ListFoundationModels",
+        "BEDROCK:listfoundationmodels",
+        "bedrock:*",
+        "bedrock:Get*",
+        "*",
+      ]) {
+        expect(warningsFor(control, [granted])).toEqual([]);
+      }
+      expect(warningsFor(control)).toEqual([forService("egress-bedrock-control", "bedrock")]);
+    });
+
+    test("a Bedrock runtime target needs bedrock:InvokeModel", () => {
+      for (const granted of ["BEDROCK:invokemodel", "bedrock:Invoke*", "bedrock:InvokeMode?"]) {
+        expect(warningsFor(runtime, [granted])).toEqual([]);
+      }
+      const warned = [forHost("egress-bedrock-runtime", RUNTIME_HOST, "bedrock")];
+      expect(warningsFor(runtime, ["bedrock:ListFoundationModels"])).toEqual(warned);
+      expect(warningsFor(runtime, ["bedrock:InvokeModelWithResponseStream"])).toEqual(warned);
+      expect(warningsFor(runtime)).toEqual([forService("egress-bedrock-runtime", "bedrock")]);
+    });
+
+    test("a Lambda function URL target needs lambda:InvokeFunctionUrl", () => {
+      expect(warningsFor(functionUrl, ["lambda:InvokeFunctionUrl"])).toEqual([]);
+      expect(warningsFor(functionUrl, ["lambda:Invoke*"])).toEqual([]);
+      expect(warningsFor(functionUrl, ["lambda:InvokeFunction"])).toEqual([
+        forHost("egress-fn", URL_HOST, "lambda"),
+      ]);
+      expect(warningsFor(functionUrl, ["bedrock:*"])).toEqual([forService("egress-fn", "lambda")]);
+    });
+
+    test("an AgentCore target needs an AgentCore grant, and the Memory file covers only Memory", () => {
+      expect(warningsFor(getBoxGatewayAgentCoreTargetSpec(), [], [MEMORY_FILE])).toEqual([]);
+      expect(warningsFor(agentcoreControl, [], [MEMORY_FILE])).toEqual([
+        forHost("egress-agentcore-control", AGENTCORE_CONTROL_HOST, "bedrock-agentcore"),
+      ]);
+      expect(warningsFor(agentcoreControl, ["bedrock-agentcore:*"], [MEMORY_FILE])).toEqual([]);
+      expect(warningsFor(otherMemory, [], [MEMORY_FILE])).toEqual([
+        forHost("egress-memory-east", OTHER_MEMORY_HOST, "bedrock-agentcore"),
+      ]);
+      expect(warningsFor(agentcoreControl)).toEqual([
+        forService("egress-agentcore-control", "bedrock-agentcore"),
+      ]);
+    });
   });
 });

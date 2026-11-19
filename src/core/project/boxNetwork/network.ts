@@ -12,7 +12,14 @@ import { BOX_MEMORY_POLICY_FILE } from "../boxMemory";
 import { boxEgressCredentialName } from "../boxProfileCredentials";
 import type { BoxEnvRoute } from "../boxProfileEgress";
 import { buildHostMap, entryLabel, entryRef, type MappedHost } from "./hostMap";
-import { BOX_EGRESS_TARGET_PREFIX, outboundAuthFor, parseEndpoint, targetNameFor } from "./egress";
+import {
+  BOX_EGRESS_TARGET_PREFIX,
+  awsEndpoint,
+  outboundAuthFor,
+  parseEndpoint,
+  targetNameFor,
+  type AwsEndpointApi,
+} from "./egress";
 import { describeEntry, describeRule, ruleOrigin } from "./places";
 import { placeOf, type ParsedPolicy } from "./policyParser";
 import { outboundAuthWords, sameOutboundAuth, targetOutboundAuth } from "./projectSpec";
@@ -94,7 +101,10 @@ export interface BoxNetwork {
   readonly envRoutes: readonly BoxEnvRoute[];
   /** The policy files, relative to `.box/`, to copy beside the AgentCore Runtime profile. */
   readonly policyFiles: readonly string[];
-  /** The IAM actions that the gateway's `additionalPolicies` files grant its role. */
+  /**
+   * The IAM actions that the gateway's `additionalPolicies` files grant its role, except the
+   * policy file that build writes.
+   */
   readonly grantedActions: readonly string[];
   readonly warnings: readonly string[];
   readonly failures: readonly BoxNetworkFailure[];
@@ -108,7 +118,7 @@ export interface BoxNetworkProject {
   readonly gateway: string;
   /** The gateway's targets, with the `agentcore` target that build adds for the Memory calls. */
   readonly targets: readonly AgentCoreGatewayTarget[];
-  /** The IAM actions that the gateway's `additionalPolicies` files grant. */
+  /** The IAM actions that the gateway's `additionalPolicies` files grant, except build's own. */
   readonly grantedActions: readonly string[];
 }
 
@@ -516,8 +526,8 @@ function hostWarnings(hosts: readonly BoxNetworkHost[]): string[] {
 
 /**
  * A warning for each target of the network's Box gateway in `spec`, as build writes it, that the
- * gateway signs with its own role for a service that no policy of that role grants. The Memory
- * policy file that build writes grants the Memory calls; a gateway that imports its role is the
+ * gateway signs with its own role for an endpoint that no policy of that role allows. The Memory
+ * policy file that build writes allows the Memory host; a gateway that imports its role is the
  * user's to grant.
  */
 export function boxGatewayIamWarnings(
@@ -526,23 +536,73 @@ export function boxGatewayIamWarnings(
 ): string[] {
   const gateway = boxGatewayOf(spec, network.runtime);
   if (!gateway || gateway.executionRoleArn) return [];
-  const memoryGranted = (gateway.additionalPolicies ?? []).includes(BOX_MEMORY_POLICY_FILE);
-  const granted = (service: string) =>
-    network.grantedActions.some(
-      (action) => action === "*" || action.toLowerCase().startsWith(`${service}:`),
-    );
+  // Build writes this file, so it counts when it is listed, not by its actions.
+  const memoryListed = (gateway.additionalPolicies ?? []).includes(BOX_MEMORY_POLICY_FILE);
+  const granted = network.grantedActions;
+  const grantsService = (service: string) =>
+    granted.some((action) => action === "*" || action.toLowerCase().startsWith(`${service}:`));
+  /** Whether the role has a permission for `service`, whatever its endpoint. */
+  const holds = (service: string) =>
+    (service === "bedrock-agentcore" && memoryListed) || grantsService(service);
+  const grants = (action: string) => granted.some((pattern) => actionMatches(pattern, action));
+  const allows = (api: AwsEndpointApi, host: string): boolean => {
+    switch (api) {
+      case "bedrock-runtime":
+        return grants("bedrock:InvokeModel");
+      case "bedrock-control":
+        return granted.some(grantsBedrockControlPlane);
+      case "bedrock-agentcore":
+        return (
+          (memoryListed && host === BOX_GATEWAY_AGENTCORE_HOST) ||
+          grantsService("bedrock-agentcore")
+        );
+      case "lambda-url":
+        return grants("lambda:InvokeFunctionUrl");
+    }
+  };
   const warnings: string[] = [];
   for (const target of gateway.targets) {
     const auth = target.outboundAuth;
-    if (auth?.type !== "GATEWAY_IAM_ROLE" || !auth.service || granted(auth.service)) continue;
-    const memory =
-      auth.service === "bedrock-agentcore" && endpointKey(target) === BOX_GATEWAY_AGENTCORE_HOST;
-    if (memory && memoryGranted) continue;
+    if (auth?.type !== "GATEWAY_IAM_ROLE" || !auth.service) continue;
+    const at = target.passthrough && parseEndpoint(target.passthrough.endpoint);
+    const endpoint = at && awsEndpoint(at.host);
+    const host = at && hostKey(at.host, at.port);
+    if (endpoint && host ? allows(endpoint.api, host) : holds(auth.service)) continue;
     warnings.push(
-      `Target '${target.name}' calls ${auth.service} with the gateway's role, which has no ` +
-        `${auth.service} permissions. Add an IAM policy file to additionalPolicies of the ` +
-        `'${network.gateway}' gateway.`,
+      endpoint && holds(auth.service)
+        ? `Target '${target.name}' calls ${host} with the gateway's role, which has no ` +
+            `${auth.service} permissions for that host. Add an IAM policy file to ` +
+            `additionalPolicies of the '${network.gateway}' gateway.`
+        : `Target '${target.name}' calls ${auth.service} with the gateway's role, which has no ` +
+            `${auth.service} permissions. Add an IAM policy file to additionalPolicies of the ` +
+            `'${network.gateway}' gateway.`,
     );
   }
   return warnings;
+}
+
+/** Whether the IAM action `pattern` matches `action`, in any case, with `*` and `?` wildcards. */
+function actionMatches(pattern: string, action: string): boolean {
+  const source = pattern
+    .split(/([*?])/)
+    .map((part) =>
+      part === "*" ? ".*" : part === "?" ? "." : part.replace(/[.+^${}()|[\]\\]/g, "\\$&"),
+    )
+    .join("");
+  return new RegExp(`^${source}$`, "i").test(action);
+}
+
+/**
+ * Whether the IAM action `pattern` allows an action of the Bedrock control plane: `*`, or a
+ * `bedrock:` pattern that can match an action other than the runtime ones, `CountTokens` and each
+ * action whose name starts with `InvokeModel`.
+ */
+function grantsBedrockControlPlane(pattern: string): boolean {
+  const lower = pattern.toLowerCase();
+  if (lower === "*") return true;
+  if (!lower.startsWith("bedrock:")) return false;
+  const wildcard = lower.search(/[*?]/);
+  const fixed = wildcard === -1 ? lower : lower.slice(0, wildcard);
+  if (fixed.startsWith("bedrock:invokemodel")) return false;
+  return wildcard !== -1 || lower !== "bedrock:counttokens";
 }

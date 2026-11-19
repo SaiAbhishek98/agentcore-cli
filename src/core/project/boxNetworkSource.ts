@@ -213,7 +213,8 @@ function policyFileProblem(
 /**
  * The actions that the Allow statements of the `.json` policy files of `policies` grant, and a
  * warning for each such file that does not exist, cannot be read, or is not a JSON object, whose
- * actions build then does not count. The Memory policy file that build writes may not exist yet.
+ * actions build then does not count. The Memory policy file that build writes is not read: it
+ * counts for its own endpoint when it is listed (`boxGatewayIamWarnings`).
  */
 function grantedActions(
   projectRoot: string,
@@ -223,7 +224,7 @@ function grantedActions(
   const actions: string[] = [];
   const warnings: string[] = [];
   for (const policy of policies) {
-    if (!policy.endsWith(".json")) continue;
+    if (!policy.endsWith(".json") || policy === BOX_MEMORY_POLICY_FILE) continue;
     const skipped = (why: string, fix: string) =>
       warnings.push(
         `${policy}, in additionalPolicies of the gateway '${gateway}', ${why}, so build cannot ` +
@@ -235,9 +236,7 @@ function grantedActions(
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
-        if (policy !== BOX_MEMORY_POLICY_FILE) {
-          skipped("does not exist", "Create it, or remove it from additionalPolicies.");
-        }
+        skipped("does not exist", "Create it, or remove it from additionalPolicies.");
       } else {
         skipped(
           `cannot be read (${code ?? String(error)})`,
