@@ -112,7 +112,7 @@ export async function stageBoxImage(
  * Stages box for build and deploy into each container runtime that runs in a box
  * ({@link runtimeRunsInBox}). It generates the runtime's AWS folder, `.box/<name>/aws/`: the box
  * release its `box.version` names, and what the runtime profile writer writes from the runtime's
- * Box network model (the Runtime profile, the generated box/agentcore pack, and a byte copy of each
+ * Box network model (the Runtime profile, the generated @box/agentcore pack, and a byte copy of each
  * policy file it names). It then copies that folder into the build context's `.box-dist/`, so the
  * image copies it. Returns the names of the runtimes it staged.
  */
