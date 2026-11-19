@@ -2082,8 +2082,9 @@ export class FsProjectManager implements ProjectManager {
 
   /**
    * Writes the box profile that runs the scaffolded agent into the agent's
-   * `.box/<runtime>/local/` folder, named after the project, calling Bedrock in
-   * `region`. An existing profile is the user's, so it is never overwritten.
+   * `.box/<runtime>/local/` folder, named after the project and the runtime,
+   * calling Bedrock in `region`. An existing profile is the user's, so it is
+   * never overwritten.
    */
   private async *writeBoxProfile(
     projectRoot: string,
