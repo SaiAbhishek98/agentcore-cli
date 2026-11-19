@@ -204,7 +204,7 @@ its agent without box. Every runtime of a Box project runs in a box, with its ow
 `.box/<runtime>/local/profile.toml`. `agentcore add runtime` and `agentcore export harness` give
 a Python runtime that profile, its `"box": { "version": ... }` in `agentcore.json`, and `start.py`
 for CodeZip, as create does, and refuse a runtime that cannot run in a box (TypeScript). Build and
-deploy stop for a runtime with no `box.version`, or with `box.version` and no profile. box comes from the public GitHub release `v0.1.11-linux-preview.6` of
+deploy stop for a runtime with no `box.version`, or with `box.version` and no profile. box comes from the public GitHub release `v0.1.11-linux-preview.7` of
 [mquang-amazon/box-releases](https://github.com/mquang-amazon/box-releases). No token or account
 is needed to download it.
 
@@ -256,7 +256,7 @@ agentcore invoke --runtime agent --session-id my-box-session-0000000000000000000
 agentcore logs runtime --name agent --since 15m --query '"running profile"'
 ```
 
-The CodeBuild log of the deploy shows `/tmp/box.tar.gz: OK` and `box 0.1.11-linux-preview.6`. The
+The CodeBuild log of the deploy shows `/tmp/box.tar.gz: OK` and `box 0.1.11-linux-preview.7`. The
 second answer should say teal, and the runtime log shows `running profile ...` with no `ERROR`,
 `blocked by egress control` or `AccessDenied` line. For a CodeZip agent, use
 `--template agent-python-strands-box` and skip the container settings.
