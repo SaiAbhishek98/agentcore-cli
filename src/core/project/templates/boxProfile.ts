@@ -43,7 +43,7 @@ export const BOX_CODEZIP_DIST = ".box-dist";
  */
 const BOX_GATEWAY_URL_ENV = "AGENTCORE_GATEWAY_BOX_URL";
 const BOX_PYTHON_ENV = "BOX_PYTHON";
-const BOX_PYTHON_PREFIX_ENV = "BOX_PYTHON_PREFIX";
+const BOX_PYTHON_STDLIB_ENV = "BOX_PYTHON_STDLIB";
 const BOX_CODE_ENV = "BOX_CODE";
 
 /** The pack of box that each box profile imports. */
@@ -358,10 +358,10 @@ function containerRunner(workloadPort: number, dev: boolean): Runner {
 
 /**
  * A CodeZip agent on AgentCore Runtime, in the paths of the local profile: the paths rule of the
- * Runtime profile derivation moves them to the Runtime's code folder and Python. It does not
- * reload. Box Core adds the loader folders itself and refuses exec on them, so they are read only.
- * One grant may not sit inside another, so the Python's prefix covers its bin/ folder. The box
- * starts in a writable folder outside the code, so nothing the agent runs needs `deny_write`.
+ * Runtime profile derivation moves them to the Runtime's code folder, Python, and standard library.
+ * It does not reload. Box Core adds the loader folders itself and refuses exec on them, so they are
+ * read only. The box starts in a writable folder outside the code, so nothing the agent runs needs
+ * `deny_write`.
  */
 function runtimeCodeZipRunner(protocol: Protocol, appDir: string, workloadPort: number): Runner {
   const { command, env } = serve(protocol, appDir, workloadPort, false);
@@ -610,10 +610,11 @@ ${agentEnv}`;
 
 /**
  * The `@box/agentcore-codezip` pack a CodeZip Runtime profile adds: the Runtime's Python interpreter
- * and base prefix, and the read-only code directory, which only the microVM knows. start.py exports
- * them ({@link BOX_PYTHON_ENV}, {@link BOX_PYTHON_PREFIX_ENV}, {@link BOX_CODE_ENV}) before it runs
- * box, and the profile reads them through these inputs, so no start script fills the profile in. box
- * finds the pack beside its binary at {@link AGENTCORE_CODEZIP_PACK_PATH}.
+ * and its standard library, and the read-only code directory, which only the microVM knows.
+ * start.py exports them ({@link BOX_PYTHON_ENV}, {@link BOX_PYTHON_STDLIB_ENV},
+ * {@link BOX_CODE_ENV}) before it runs box, and the profile reads them through these inputs, so no
+ * start script fills the profile in. box finds the pack beside its binary at
+ * {@link AGENTCORE_CODEZIP_PACK_PATH}.
  */
 export function renderAgentCoreCodeZipPack(): string {
   return `# The CodeZip Runtime's Python and code directory, read from the environment start.py exports.
@@ -629,9 +630,9 @@ description = "The AgentCore Runtime's Python interpreter."
 from = ${str(`env:${BOX_PYTHON_ENV}`)}
 pattern = ${str(ABSOLUTE_PATH_PATTERN)}
 
-[inputs.python.prefix]
-description = "The Python interpreter's base prefix, for its standard library."
-from = ${str(`env:${BOX_PYTHON_PREFIX_ENV}`)}
+[inputs.python.stdlib]
+description = "The Python interpreter's standard library, with its native modules."
+from = ${str(`env:${BOX_PYTHON_STDLIB_ENV}`)}
 
 [inputs.code.dir]
 description = "The unpacked zip directory the Runtime runs the agent from."

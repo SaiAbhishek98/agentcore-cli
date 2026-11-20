@@ -63,14 +63,15 @@ function boxPython(executable: string): string {
 
 /**
  * What start.py's main() does in `root`, with its folders there and os.execve replaced: the box it
- * runs, its arguments, the BOX_PYTHON it exports and what box_python gives, and the files it copies
- * into the profile folder. `withTomllib` false runs it as Python 3.10 does, with no tomllib, so
+ * runs, its arguments, the BOX_PYTHON it exports and what box_python gives, each BOX_ variable it
+ * exports with the standard library and base prefix of this Python, and the files it copies into the
+ * profile folder. `withTomllib` false runs it as Python 3.10 does, with no tomllib, so
  * start.py reads the profile with tomli, which the template installs there. A Python with no
  * tomllib or tomli here gets a stand-in that reads the one `policies` line as JSON.
  */
 function startRun(root: string, withTomllib: boolean) {
   const script = [
-    "import json, os, sys",
+    "import json, os, sys, sysconfig",
     "sys.path.insert(0, sys.argv[1]); import start",
     "root = sys.argv[2]",
     "start.DIST = os.path.join(root, 'dist'); start.BOX = os.path.join(start.DIST, 'box')",
@@ -96,6 +97,8 @@ function startRun(root: string, withTomllib: boolean) {
     "                    for d, _, fs in os.walk(start.PROFILE_DIR) for f in fs)",
     "    print(json.dumps({'path': path, 'argv': argv, 'python': env['BOX_PYTHON'],",
     "                      'expected': start.box_python(sys.executable, sys.version_info),",
+    "                      'box': {k: v for k, v in env.items() if k.startswith('BOX_')},",
+    "                      'stdlib': sysconfig.get_path('stdlib'), 'prefix': sys.base_prefix,",
     "                      'copied': copied}))",
     "    sys.exit(0)",
     "start.os.execve = execve",
@@ -110,6 +113,9 @@ function startRun(root: string, withTomllib: boolean) {
     argv: string[];
     python: string;
     expected: string;
+    box: Record<string, string>;
+    stdlib: string;
+    prefix: string;
     copied: string[];
   };
 }
@@ -143,6 +149,21 @@ describe("start.py main", () => {
       ]);
       expect(run.python).toBe(run.expected);
       expect(run.copied).toEqual(["policy.dw", "profile.toml", join("rules", "extra.dw")]);
+    },
+  );
+
+  test.skipIf(skipped)(
+    "gives box the standard library of the Runtime's Python, and not its base prefix, which box refuses as a system root (/usr on the Runtime)",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "box-start-main-"));
+      directories.push(root);
+      mkdirSync(join(root, "dist"), { recursive: true });
+      writeFileSync(join(root, "dist", "profile.toml"), '[profile]\nname = "demo"\n');
+
+      const run = startRun(root, true);
+
+      expect(run.box.BOX_PYTHON_STDLIB).toBe(run.stdlib);
+      expect(Object.values(run.box)).not.toContain(run.prefix);
     },
   );
 });

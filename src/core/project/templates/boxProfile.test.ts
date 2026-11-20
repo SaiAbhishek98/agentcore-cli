@@ -489,11 +489,13 @@ describe("renderAgentCoreCodeZipPack", () => {
     expect(toml().pack).toEqual({ name: "@box/agentcore-codezip", version: 1, kind: "support" });
   });
 
-  test("declares the Runtime Python and code directory from the environment start.py exports", () => {
+  test("declares the Runtime Python, its standard library, and the code directory from the environment start.py exports", () => {
     const { inputs } = toml();
     expect(inputs.python.path.from).toBe("env:BOX_PYTHON");
-    expect(inputs.python.prefix.from).toBe("env:BOX_PYTHON_PREFIX");
+    expect(inputs.python.stdlib.from).toBe("env:BOX_PYTHON_STDLIB");
     expect(inputs.code.dir.from).toBe("env:BOX_CODE");
+    // The prefix of the Runtime's Python is /usr, which box refuses as a grant.
+    expect(inputs.python.prefix).toBeUndefined();
   });
 
   test("bounds the inputs that reach the agent command with a pattern", () => {
@@ -501,7 +503,7 @@ describe("renderAgentCoreCodeZipPack", () => {
     // The Python path (command element 0) and the code dir (--app-dir) reach `command`.
     expect(typeof inputs.python.path.pattern).toBe("string");
     expect(typeof inputs.code.dir.pattern).toBe("string");
-    // The prefix reaches only filesystem grants, which box does not require to be bounded.
-    expect(inputs.python.prefix.pattern).toBeUndefined();
+    // The standard library reaches only filesystem grants, which box does not require to be bounded.
+    expect(inputs.python.stdlib.pattern).toBeUndefined();
   });
 });
